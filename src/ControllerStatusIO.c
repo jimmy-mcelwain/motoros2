@@ -73,7 +73,7 @@ BOOL Ros_Controller_Initialize()
         bInitOk = FALSE;
 
     // but too many is also not OK
-    motoRos_ASSERT_LE_INT(g_Ros_Controller.numGroup, MAX_CONTROLLABLE_GROUPS,
+    motoRos_ASSERT_LESS_THAN_OR_EQUAL_TO_INT(g_Ros_Controller.numGroup, MAX_CONTROLLABLE_GROUPS,
         SUBCODE_FAIL_ROS_CONTROLLER_INIT_TOO_MANY_GROUPS);
 
     BOOL bShouldSetJointNamesToDefaultValues = (strlen(g_nodeConfigSettings.joint_names[0]) == 0);
@@ -156,7 +156,7 @@ BOOL Ros_Controller_Initialize()
         ROSIDL_GET_MSG_TYPE_SUPPORT(industrial_msgs, msg, RobotStatus),
         TOPIC_NAME_ROBOT_STATUS,
         qos_profile);
-    motoRos_ASSERT_EQ_INT(ret, RCL_RET_OK, SUBCODE_FAIL_CREATE_PUBLISHER_ROBOT_STATUS);
+    motoRos_ASSERT_EQUAL_INT(ret, RCL_RET_OK, SUBCODE_FAIL_CREATE_PUBLISHER_ROBOT_STATUS);
 
     //==================================
     //create message for robot status
