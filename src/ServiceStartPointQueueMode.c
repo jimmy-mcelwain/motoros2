@@ -23,7 +23,7 @@ void Ros_ServiceStartPointQueueMode_Initialize()
         SERVICE_NAME_START_POINT_QUEUE_MODE);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_START_QUEUE_MODE, "Failed to init service (%d)", (int)ret);
 
-    rosidl_runtime_c__String__init(&g_messages_StartPointQueueMode.response.message);
+    motoros2_interfaces__srv__StartPointQueueMode_Response__init(&g_messages_StartPointQueueMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_start_point_queue_mode_init);
 }
@@ -39,7 +39,7 @@ void Ros_ServiceStartPointQueueMode_Cleanup()
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg(
             "Failed cleaning up " SERVICE_NAME_START_POINT_QUEUE_MODE " service: %d", ret);
-    rosidl_runtime_c__String__fini(&g_messages_StartPointQueueMode.response.message);
+    motoros2_interfaces__srv__StartPointQueueMode_Response__fini(&g_messages_StartPointQueueMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_start_point_queue_mode_fini);
 }

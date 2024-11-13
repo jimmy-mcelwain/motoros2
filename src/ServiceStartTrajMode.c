@@ -23,7 +23,7 @@ void Ros_ServiceStartTrajMode_Initialize()
         SERVICE_NAME_START_TRAJ_MODE);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_START_TRAJ_MODE, "Failed to init service (%d)", (int)ret);
 
-    rosidl_runtime_c__String__init(&g_messages_StartTrajMode.response.message);
+    motoros2_interfaces__srv__StartTrajMode_Response__init(&g_messages_StartTrajMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_start_traj_mode_init);
 }
@@ -39,7 +39,7 @@ void Ros_ServiceStartTrajMode_Cleanup()
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg(
             "Failed cleaning up " SERVICE_NAME_START_TRAJ_MODE " service: %d", ret);
-    rosidl_runtime_c__String__fini(&g_messages_StartTrajMode.response.message);
+    motoros2_interfaces__srv__StartTrajMode_Response__fini(&g_messages_StartTrajMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_start_traj_mode_fini);
 }

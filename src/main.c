@@ -103,33 +103,59 @@ void RosInitTask()
     //==================================
     FOREVER
     {
+        MOTOROS2_MEM_TRACE_START(TOTAL_LOSS);
+        MOTOROS2_MEM_TRACE_START(ONE_INIT);
         Ros_Controller_StatusInit();
-
+        MOTOROS2_MEM_TRACE_REPORT(ONE_INIT);
+        MOTOROS2_MEM_TRACE_START(TWO_INIT);
         Ros_Allocation_Initialize(&g_motoros2_Allocator);
-
+        MOTOROS2_MEM_TRACE_REPORT(TWO_INIT);
+        MOTOROS2_MEM_TRACE_START(TWO_POINT_FIVE_INIT);
         Ros_mpGetRobotCalibrationData_Initialize(); //must occur before Ros_Controller_Initialize
-
+        MOTOROS2_MEM_TRACE_REPORT(TWO_POINT_FIVE_INIT);
+        MOTOROS2_MEM_TRACE_START(THREE_INIT);
         Ros_Communication_ConnectToAgent();
+        MOTOROS2_MEM_TRACE_REPORT(THREE_INIT);
 
         Ros_Controller_SetIOState(IO_FEEDBACK_AGENTCONNECTED, TRUE);
-
+        MOTOROS2_MEM_TRACE_START(FOUR_INIT);
         Ros_Communication_Initialize();
-
+        MOTOROS2_MEM_TRACE_REPORT(FOUR_INIT);
+        MOTOROS2_MEM_TRACE_START(FIVE_INIT);
         // non-recoverable if this fails
         motoRosAssert(Ros_Controller_Initialize(), SUBCODE_FAIL_ROS_CONTROLLER_INIT);
-
+        MOTOROS2_MEM_TRACE_REPORT(FIVE_INIT);
+        MOTOROS2_MEM_TRACE_START(SIX_INIT);
         Ros_InformChecker_ValidateJob();
-
+        MOTOROS2_MEM_TRACE_REPORT(SIX_INIT);
+        MOTOROS2_MEM_TRACE_START(SEVEN_INIT);
         Ros_PositionMonitor_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(SEVEN_INIT);
+        MOTOROS2_MEM_TRACE_START(EIGHT_INIT);
         Ros_ActionServer_FJT_Initialize(); //initialize action server - FollowJointTrajectory
-
+        MOTOROS2_MEM_TRACE_REPORT(EIGHT_INIT);
+        MOTOROS2_MEM_TRACE_START(NINE_INIT);
         Ros_ServiceQueueTrajPoint_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(NINE_INIT);
+        MOTOROS2_MEM_TRACE_START(TEN_INIT);
         Ros_ServiceReadWriteIO_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(TEN_INIT);
+        MOTOROS2_MEM_TRACE_START(ELEVEN_INIT);
         Ros_ServiceResetError_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(ELEVEN_INIT);
+        MOTOROS2_MEM_TRACE_START(TWELVE_INIT);
         Ros_ServiceStartTrajMode_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(TWELVE_INIT);
+        MOTOROS2_MEM_TRACE_START(THIRTEEN_INIT);
         Ros_ServiceStartPointQueueMode_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(THIRTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(FOURTEEN_INIT);
         Ros_ServiceStopTrajMode_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(FOURTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(FIFTEEN_INIT);
         Ros_ServiceSelectMotionTool_Initialize();
+        MOTOROS2_MEM_TRACE_REPORT(FIFTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(SIXTEEN_INIT);
 
         // Start executor that performs all communication
         // (This task deletes itself when the agent disconnects.)
@@ -182,7 +208,8 @@ void RosInitTask()
             //Update robot's feedback position and publish the topics
             Ros_PositionMonitor_UpdateLocation();
         }
-
+        MOTOROS2_MEM_TRACE_REPORT(SIXTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(SEVENTEEN_INIT);
         //==================================
         Ros_Controller_SetIOState(IO_FEEDBACK_AGENTCONNECTED, FALSE);
         Ros_Debug_BroadcastMsg("Micro-ROS PC Agent disconnected");
@@ -197,31 +224,60 @@ void RosInitTask()
         {
             Ros_Sleep(1000);
         } while (Ros_Controller_IsInMotion()); //wait for motion to complete before terminating tasks
-
+        MOTOROS2_MEM_TRACE_REPORT(SEVENTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(EIGHTEEN_INIT);
         //wait for Ros_Communication_StartExecutors to finish
         mpSemTake(semCommunicationExecutorStatus, WAIT_FOREVER);
+        MOTOROS2_MEM_TRACE_REPORT(EIGHTEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(NINETEEN_INIT);
         mpSemDelete(semCommunicationExecutorStatus);
-
+        MOTOROS2_MEM_TRACE_REPORT(NINETEEN_INIT);
+        MOTOROS2_MEM_TRACE_START(FIFTEEN_FINI);
         Ros_ServiceSelectMotionTool_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(FIFTEEN_FINI);
+        MOTOROS2_MEM_TRACE_START(FOURTEEN_FINI);
         Ros_ServiceStopTrajMode_Cleanup();
-        Ros_ServiceStartTrajMode_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(FOURTEEN_FINI);
+        MOTOROS2_MEM_TRACE_START(THIRTEEN_FINI);
         Ros_ServiceStartPointQueueMode_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(THIRTEEN_FINI);
+        MOTOROS2_MEM_TRACE_START(TWELVE_FINI);
+        Ros_ServiceStartTrajMode_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(TWELVE_FINI);
+        MOTOROS2_MEM_TRACE_START(ELEVEN_FINI);
         Ros_ServiceResetError_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(ELEVEN_FINI);
+        MOTOROS2_MEM_TRACE_START(TEN_FINI);
         Ros_ServiceReadWriteIO_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(TEN_FINI);
+        MOTOROS2_MEM_TRACE_START(NINE_FINI);
         Ros_ServiceQueueTrajPoint_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(NINE_FINI);
 
+        MOTOROS2_MEM_TRACE_START(EIGHT_FINI);
         Ros_ActionServer_FJT_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(EIGHT_FINI);
+        MOTOROS2_MEM_TRACE_START(SEVEN_FINI);
         Ros_PositionMonitor_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(SEVEN_FINI);
+        MOTOROS2_MEM_TRACE_START(FIVE_FINI);
         Ros_Controller_Cleanup();
+        MOTOROS2_MEM_TRACE_REPORT(FIVE_FINI);
+        MOTOROS2_MEM_TRACE_START(FOUR_FINI);
         Ros_Communication_Cleanup(); 
+        MOTOROS2_MEM_TRACE_REPORT(FOUR_FINI);
+        MOTOROS2_MEM_TRACE_START(TWO_POINT_FIVE_FINI);
         Ros_mpGetRobotCalibrationData_Cleanup();
-
+        MOTOROS2_MEM_TRACE_REPORT(TWO_POINT_FIVE_FINI);
+        MOTOROS2_MEM_TRACE_START(ONE_FINI);
         //--------------------------------
         Ros_Controller_SetIOState(IO_FEEDBACK_INITIALIZATION_DONE, FALSE);
 
         Ros_Sleep(2500);
 
         Ros_Debug_BroadcastMsg("Shutdown complete. Available memory: (%d) bytes", mpNumBytesFree());
+        MOTOROS2_MEM_TRACE_REPORT(ONE_FINI);
+        MOTOROS2_MEM_TRACE_REPORT(TOTAL_LOSS);
     }
 }
 

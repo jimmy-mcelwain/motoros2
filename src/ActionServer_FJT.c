@@ -72,11 +72,15 @@ void Ros_ActionServer_FJT_Initialize()
 
     //===============================================
     //create action server
+    MOTOROS2_MEM_TRACE_START(idk_if_important);
     const rosidl_action_type_support_t* action_type_support = ROSIDL_GET_ACTION_TYPE_SUPPORT(control_msgs, FollowJointTrajectory);
+    MOTOROS2_MEM_TRACE_REPORT(idk_if_important);
+    MOTOROS2_MEM_TRACE_START(fjt_server_init);
     rclc_action_server_init_default(&g_actionServerFollowJointTrajectory, &g_microRosNodeInfo.node, &g_microRosNodeInfo.support, action_type_support, ACTION_NAME_FOLLOW_JOINT_TRAJECTORY);
-
+    MOTOROS2_MEM_TRACE_REPORT(fjt_server_init);
     //===============================================
     //configure how much memory to allocate for the FJT request message
+    MOTOROS2_MEM_TRACE_START(should_all_be_static);
     static micro_ros_utilities_memory_conf_t goal_svc_req_msg_alloc_cfg = { 0 };
     int maxAxes = MAX_CONTROLLABLE_GROUPS * MP_GRP_AXES_NUM;
     goal_svc_req_msg_alloc_cfg.max_string_capacity = MAX_JOINT_NAME_LENGTH;
@@ -106,7 +110,7 @@ void Ros_ActionServer_FJT_Initialize()
 
     goal_svc_req_msg_alloc_cfg.rules = rules;
     goal_svc_req_msg_alloc_cfg.n_rules = sizeof(rules) / sizeof(rules[0]);
-
+    
     //----------------
     //Create goal-request message using STATIC buffer. My heap is very limited, so I'm cheating by using
     //static block of memory that is allocated in MemoryAllocation.c (Ros_StaticAllocationBuffer_FJTgoal)
@@ -124,7 +128,7 @@ void Ros_ActionServer_FJT_Initialize()
         goal_svc_req_msg_alloc_cfg,
         Ros_StaticAllocationBuffer_FJTgoal,
         sizeof(Ros_StaticAllocationBuffer_FJTgoal));
-
+    MOTOROS2_MEM_TRACE_REPORT(should_all_be_static);
     MOTOROS2_MEM_TRACE_REPORT(fjt_init);
 }
 
@@ -133,18 +137,21 @@ void Ros_ActionServer_FJT_Cleanup()
     MOTOROS2_MEM_TRACE_START(fjt_fini);
 
     Ros_Debug_BroadcastMsg("Cleanup FollowJointTrajectory server");
+    MOTOROS2_MEM_TRACE_START(fjt_server_fini);
     rclc_action_server_fini(&g_actionServerFollowJointTrajectory, &g_microRosNodeInfo.node);
-
+    MOTOROS2_MEM_TRACE_REPORT(fjt_server_fini);
     //Memory for actionServer_FJT_SendGoal_Request was not allocated off the heap. It was taken from a static buffer.
     //Clear the buffer and any pointers into it.
     bzero(&g_actionServer_FJT_SendGoal_Request, sizeof(g_actionServer_FJT_SendGoal_Request));
     bzero(Ros_StaticAllocationBuffer_FJTgoal, sizeof(Ros_StaticAllocationBuffer_FJTgoal));
 
+    MOTOROS2_MEM_TRACE_START(bruh_what);
     if (fjt_result_response.result.error_string.data != NULL)
         micro_ros_string_utilities_destroy(&fjt_result_response.result.error_string);
-
+    MOTOROS2_MEM_TRACE_REPORT(bruh_what);
+    MOTOROS2_MEM_TRACE_START(delete_feedback_msg);
     Ros_ActionServer_FJT_DeleteFeedbackMessage();
-
+    MOTOROS2_MEM_TRACE_REPORT(delete_feedback_msg);
     MOTOROS2_MEM_TRACE_REPORT(fjt_fini);
 }
 
@@ -863,7 +870,4 @@ void Ros_ActionServer_FJT_ProcessResult()
 }
 
 
-//included here as this tests 'static' functions
-#define MOTOROS2_INCLUDE_TESTS_FJT_C
-#include "Tests_ActionServer_FJT.c"
-#undef MOTOROS2_INCLUDE_TESTS_FJT_C
+

@@ -282,12 +282,12 @@ void Ros_ServiceReadWriteIO_Initialize()
     ret = rclc_service_init_default(&g_serviceWriteMRegister, &g_microRosNodeInfo.node, t_supp_write_mreg     , SERVICE_NAME_WRITE_MREGISTER);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_WRITE_M_REG, "Failed to init service (%d)", (int)ret);
 
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_single_io_read.message);
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_group_io_read.message);
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_single_io_write.message);
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_group_io_write.message);
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_mreg_read.message);
-    rosidl_runtime_c__String__init(&g_messages_ReadWriteIO.resp_mreg_write.message);
+    motoros2_interfaces__srv__ReadSingleIO_Response__init(&g_messages_ReadWriteIO.resp_single_io_read);
+    motoros2_interfaces__srv__WriteSingleIO_Response__init(&g_messages_ReadWriteIO.resp_single_io_write);
+    motoros2_interfaces__srv__ReadGroupIO_Response__init(&g_messages_ReadWriteIO.resp_group_io_read);
+    motoros2_interfaces__srv__WriteGroupIO_Response__init(&g_messages_ReadWriteIO.resp_group_io_write);
+    motoros2_interfaces__srv__ReadMRegister_Response__init(&g_messages_ReadWriteIO.resp_mreg_read);
+    motoros2_interfaces__srv__WriteMRegister_Response__init(&g_messages_ReadWriteIO.resp_mreg_write);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_rw_io_init);
 }
@@ -328,12 +328,12 @@ void Ros_ServiceReadWriteIO_Cleanup()
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up " SERVICE_NAME_WRITE_MREGISTER " service: %d", ret);
 
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_single_io_read.message);
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_group_io_read.message);
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_single_io_write.message);
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_group_io_write.message);
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_mreg_read.message);
-    rosidl_runtime_c__String__fini(&g_messages_ReadWriteIO.resp_mreg_write.message);
+    motoros2_interfaces__srv__ReadSingleIO_Response__fini(&g_messages_ReadWriteIO.resp_single_io_read);
+    motoros2_interfaces__srv__WriteSingleIO_Response__fini(&g_messages_ReadWriteIO.resp_single_io_write);
+    motoros2_interfaces__srv__ReadGroupIO_Response__fini(&g_messages_ReadWriteIO.resp_group_io_read);
+    motoros2_interfaces__srv__WriteGroupIO_Response__fini(&g_messages_ReadWriteIO.resp_group_io_write);
+    motoros2_interfaces__srv__ReadMRegister_Response__fini(&g_messages_ReadWriteIO.resp_mreg_read);
+    motoros2_interfaces__srv__WriteMRegister_Response__fini(&g_messages_ReadWriteIO.resp_mreg_write);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_rw_io_fini);
 }

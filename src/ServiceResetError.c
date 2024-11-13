@@ -25,8 +25,8 @@ void Ros_ServiceResetError_Initialize()
     
     rcl_ret_t ret = rclc_service_init_default(&g_serviceResetError, &g_microRosNodeInfo.node, type_support, SERVICE_NAME_RESET_ERROR);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_RESET_ERROR, "Failed to init service (%d)", (int)ret);
-
-    rosidl_runtime_c__String__init(&g_messages_ResetError.response.message);
+    
+    motoros2_interfaces__srv__ResetError_Response__init(&g_messages_ResetError.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_reset_error_init);
 }
@@ -40,7 +40,7 @@ void Ros_ServiceResetError_Cleanup()
     ret = rcl_service_fini(&g_serviceResetError, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up reset service: %d", ret);
-    rosidl_runtime_c__String__fini(&g_messages_ResetError.response.message);
+    motoros2_interfaces__srv__ResetError_Response__fini(&g_messages_ResetError.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_reset_error_fini);
 }

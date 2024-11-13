@@ -16,13 +16,14 @@ ServiceQueueTrajPoint_Messages g_messages_QueueTrajPoint;
 
 void Ros_ServiceQueueTrajPoint_Initialize()
 {
-    MOTOROS2_MEM_TRACE_START(svc_queue_point_init);
 
     //--------------
     const rosidl_service_type_support_t* type_support = ROSIDL_GET_SRV_TYPE_SUPPORT(motoros2_interfaces, srv, QueueTrajPoint);
 
     rcl_ret_t ret;
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_publisher_init);
     ret = rclc_service_init_default(&g_serviceQueueTrajPoint, &g_microRosNodeInfo.node, type_support, SERVICE_NAME_QUEUE_TRAJ_POINT);
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_publisher_init);
     motoRosAssert((ret == RCL_RET_OK), SUBCODE_FAIL_CREATE_SERVICE_QUEUE_POINT);
 
     //--------------
@@ -32,10 +33,15 @@ void Ros_ServiceQueueTrajPoint_Initialize()
     //and provide an appropriate error code.
     int maxAxes = MAX_CONTROLLABLE_GROUPS * MP_GRP_AXES_NUM;
 
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_request_create);
+
     //TODO: Update to use micro_ros_utilities for allocation
     g_messages_QueueTrajPoint.request = motoros2_interfaces__srv__QueueTrajPoint_Request__create();    
-    rosidl_runtime_c__String__Sequence__init(&g_messages_QueueTrajPoint.request->joint_names, maxAxes);
 
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_request_create);
+
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_various_inits);
+    rosidl_runtime_c__String__Sequence__init(&g_messages_QueueTrajPoint.request->joint_names, maxAxes);
     for (int i = 0; i < maxAxes; i += 1)
         rosidl_runtime_c__String__assign(&g_messages_QueueTrajPoint.request->joint_names.data[i], "012345678901234567890123456789012");
 
@@ -44,29 +50,30 @@ void Ros_ServiceQueueTrajPoint_Initialize()
     rosidl_runtime_c__float64__Sequence__init(&g_messages_QueueTrajPoint.request->point.accelerations, maxAxes);
     rosidl_runtime_c__float64__Sequence__init(&g_messages_QueueTrajPoint.request->point.effort, maxAxes);
     
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_various_inits);
     //--------------
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_response_create);
     g_messages_QueueTrajPoint.response = motoros2_interfaces__srv__QueueTrajPoint_Response__create();
-    rosidl_runtime_c__String__init(&g_messages_QueueTrajPoint.response->message);
-
-    //--------------
-    MOTOROS2_MEM_TRACE_REPORT(svc_queue_point_init);
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_response_create);
 }
 
 void Ros_ServiceQueueTrajPoint_Cleanup()
 {
     rcl_ret_t ret;
-    MOTOROS2_MEM_TRACE_START(svc_queue_point_fini);
 
     Ros_Debug_BroadcastMsg("Cleanup service queue point");
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_service_fini);
     ret = rcl_service_fini(&g_serviceQueueTrajPoint, &g_microRosNodeInfo.node);
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_service_fini);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up " SERVICE_NAME_QUEUE_TRAJ_POINT " service: %d", ret);
-
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_request_fini);
     motoros2_interfaces__srv__QueueTrajPoint_Request__destroy(g_messages_QueueTrajPoint.request);
-
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_request_fini);
+    MOTOROS2_MEM_TRACE_START(AAAAAAAsvc_queue_point_response_fini);
     motoros2_interfaces__srv__QueueTrajPoint_Response__destroy(g_messages_QueueTrajPoint.response);
+    MOTOROS2_MEM_TRACE_REPORT(AAAAAAAsvc_queue_point_response_fini);
 
-    MOTOROS2_MEM_TRACE_REPORT(svc_queue_point_fini);
 }
 
 void Ros_ServiceQueueTrajPoint_Trigger(const void* request_msg, void* response_msg)

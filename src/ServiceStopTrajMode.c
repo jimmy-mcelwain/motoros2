@@ -20,7 +20,7 @@ void Ros_ServiceStopTrajMode_Initialize()
     rcl_ret_t ret = rclc_service_init_default(&g_serviceStopTrajMode, &g_microRosNodeInfo.node, type_support, SERVICE_NAME_STOP_TRAJ_MODE);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_STOP_TRAJ_MODE, "Failed to init service (%d)", (int)ret);
 
-    rosidl_runtime_c__String__init(&g_messages_StopTrajMode.response.message);
+    std_srvs__srv__Trigger_Response__init(&g_messages_StopTrajMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_stop_traj_mode_init);
 }
@@ -35,7 +35,8 @@ void Ros_ServiceStopTrajMode_Cleanup()
     ret = rcl_service_fini(&g_serviceStopTrajMode, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up stop_traj_mode service: %d", ret);
-    rosidl_runtime_c__String__fini(&g_messages_StopTrajMode.response.message);
+
+    std_srvs__srv__Trigger_Response__fini(&g_messages_StopTrajMode.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_stop_traj_mode);
 }

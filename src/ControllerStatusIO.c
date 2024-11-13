@@ -150,6 +150,7 @@ BOOL Ros_Controller_Initialize()
     //create publisher for robot status
     const rmw_qos_profile_t* qos_profile = Ros_ConfigFile_To_Rmw_Qos_Profile(g_nodeConfigSettings.qos_robot_status);
     rcl_ret_t ret;
+    MOTOROS2_MEM_TRACE_START(robot_status_publisher_init);
     ret = rclc_publisher_init(
         &g_publishers_RobotStatus.robotStatus,
         &g_microRosNodeInfo.node,
@@ -164,6 +165,7 @@ BOOL Ros_Controller_Initialize()
     g_messages_RobotStatus.msgRobotStatus = industrial_msgs__msg__RobotStatus__create();
     rosidl_runtime_c__int32__Sequence__init(&g_messages_RobotStatus.msgRobotStatus->error_codes, MAX_ALARM_COUNT + 1);
 
+    MOTOROS2_MEM_TRACE_REPORT(robot_status_publisher_init);
     //==================================
     // If not started, start the IncMoveTask (there should be only one instance of this thread)
     if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
@@ -229,7 +231,7 @@ void Ros_Controller_Cleanup()
     //--------------------------------
     // Cleanup memory
     //
-
+    MOTOROS2_MEM_TRACE_START(control_group_frees);
     for (int groupNum = 0; groupNum < MAX_CONTROLLABLE_GROUPS; groupNum += 1)
     {
         if (g_Ros_Controller.ctrlGroups[groupNum] != NULL)
@@ -239,17 +241,21 @@ void Ros_Controller_Cleanup()
             mpFree(g_Ros_Controller.ctrlGroups[groupNum]);
         }
     }
+    MOTOROS2_MEM_TRACE_REPORT(control_group_frees);
 
+    MOTOROS2_MEM_TRACE_START(thread_end);
     mpDeleteTask(g_Ros_Controller.tidIncMoveThread);
     g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
+    MOTOROS2_MEM_TRACE_REPORT(thread_end);
 
+    MOTOROS2_MEM_TRACE_START(robot_status_fini);
     Ros_Debug_BroadcastMsg("Cleanup publisher robot status");
     ret = rcl_publisher_fini(&g_publishers_RobotStatus.robotStatus, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up robot status publisher: %d", ret);
 
     industrial_msgs__msg__RobotStatus__destroy(g_messages_RobotStatus.msgRobotStatus);
-
+    MOTOROS2_MEM_TRACE_REPORT(robot_status_fini);
     MOTOROS2_MEM_TRACE_REPORT(ctrlr_fini);
 }
 

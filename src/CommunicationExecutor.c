@@ -49,9 +49,10 @@ void Ros_Communication_ConnectToAgent()
 
     g_microRosNodeInfo.initOptions = rcl_get_zero_initialized_init_options();
 
+    MOTOROS2_MEM_TRACE_START(init_options_init);
     ret = rcl_init_options_init(&g_microRosNodeInfo.initOptions, g_motoros2_Allocator);
     motoRosAssert(ret == RCL_RET_OK, SUBCODE_FAIL_OPTIONS_INIT);
-
+    MOTOROS2_MEM_TRACE_REPORT(init_options_init);
     Ros_Debug_BroadcastMsg("Using ROS domain ID: %d", g_nodeConfigSettings.ros_domain_id);
     ret = rcl_init_options_set_domain_id(&g_microRosNodeInfo.initOptions, g_nodeConfigSettings.ros_domain_id);
     motoRosAssert(ret == RCL_RET_OK, SUBCODE_FAIL_OPTIONS_INIT_DOMAIN_ID);
@@ -136,9 +137,11 @@ void Ros_Communication_Initialize()
     //==================================
     //create node
     MOTOROS2_MEM_TRACE_START(comm_exec_init);
-
+    MOTOROS2_MEM_TRACE_START(support_init);
     rcl_ret_t ret = rclc_support_init_with_options(&g_microRosNodeInfo.support,
         0, NULL, &g_microRosNodeInfo.initOptions, &g_motoros2_Allocator);
+    MOTOROS2_MEM_TRACE_REPORT(support_init);
+    MOTOROS2_MEM_TRACE_START(inbetween);
     Ros_Debug_BroadcastMsg("rclc_support_init_with_options = %d", (int)ret);
     motoRosAssert(ret == RCL_RET_OK, SUBCODE_FAIL_SUPPORT_INIT);
 
@@ -155,9 +158,12 @@ void Ros_Communication_Initialize()
     Ros_Debug_BroadcastMsg("len(remap_rules str): %d", strlen(remap_rules_str_));
 
     bzero(faux_argv, MAX_REMAP_RULE_NUM);
+    MOTOROS2_MEM_TRACE_REPORT(inbetween);
+    MOTOROS2_MEM_TRACE_START(parse_args_init);
     faux_argc = Ros_ConstructFauxArgv(
         remap_rules_str_, faux_argv, MAX_REMAP_RULE_NUM);
-
+    MOTOROS2_MEM_TRACE_REPORT(parse_args_init);
+    MOTOROS2_MEM_TRACE_START(parse_args);
     if (faux_argc > 0)
     {
         //parse the just constructed argv
@@ -171,23 +177,30 @@ void Ros_Communication_Initialize()
             node_options = rcl_node_get_default_options();
         }
     }
+    MOTOROS2_MEM_TRACE_REPORT(parse_args);
 
     //init node with the remap rules and other options from the config file
+    MOTOROS2_MEM_TRACE_START(node_init);
     ret = rclc_node_init_with_options(
         &g_microRosNodeInfo.node, g_nodeConfigSettings.node_name,
         g_nodeConfigSettings.node_namespace, &g_microRosNodeInfo.support,
         &node_options);
     Ros_Debug_BroadcastMsg("rclc_node_init_with_options = %d", (int)ret);
     motoRosAssert(ret == RCL_RET_OK, SUBCODE_FAIL_NODE_INIT);
-
+    MOTOROS2_MEM_TRACE_REPORT(node_init);
+    MOTOROS2_MEM_TRACE_START(node_type_cache_init);
 #ifdef MOTOPLUS_LIBMICROROS_ROS2_IS_IRON
     ret = rcl_node_type_cache_init(&g_microRosNodeInfo.node);
     motoRosAssert(ret == RCL_RET_OK, SUBCODE_FAIL_NODE_TYPE_CACHE_INIT);
 #endif // MOTOPLUS_LIBMICROROS_ROS2_IS_IRON
     //we're done with it
+    MOTOROS2_MEM_TRACE_REPORT(node_type_cache_init);
+    MOTOROS2_MEM_TRACE_START(node_options_fini);
     ret = rcl_node_options_fini(&node_options); RCL_UNUSED(ret);
+    MOTOROS2_MEM_TRACE_REPORT(node_options_fini);
+    MOTOROS2_MEM_TRACE_START(parse_args_fini);
     Ros_CleanupFauxArgv(faux_argv, faux_argc);
-
+    MOTOROS2_MEM_TRACE_REPORT(parse_args_fini);
     MOTOROS2_MEM_TRACE_REPORT(comm_exec_init);
 }
 
@@ -195,27 +208,33 @@ void Ros_Communication_Cleanup()
 {
     MOTOROS2_MEM_TRACE_START(comm_exec_fini);
     rcl_ret_t ret;
-
+    MOTOROS2_MEM_TRACE_START(node_type_cache_fini);
 #ifdef MOTOPLUS_LIBMICROROS_ROS2_IS_IRON
     ret = rcl_node_type_cache_fini(&g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up node type cache: %d", ret);
 #endif
-
+    MOTOROS2_MEM_TRACE_REPORT(node_type_cache_fini);
     Ros_Debug_BroadcastMsg("Cleanup node");
+    MOTOROS2_MEM_TRACE_START(node_fini);
     ret = rcl_node_fini(&g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up node: %d", ret);
-
-    Ros_Debug_BroadcastMsg("Cleanup init options");
-    ret = rcl_init_options_fini(&g_microRosNodeInfo.initOptions);
-    if (ret != RCL_RET_OK)
-        Ros_Debug_BroadcastMsg("Failed cleaning up init options: %d", ret);
+    MOTOROS2_MEM_TRACE_REPORT(node_fini);
 
     Ros_Debug_BroadcastMsg("Cleanup support");
+    MOTOROS2_MEM_TRACE_START(support_fini);
     ret = rclc_support_fini(&g_microRosNodeInfo.support);
+    MOTOROS2_MEM_TRACE_REPORT(support_fini);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up support: %d", ret);
+
+    Ros_Debug_BroadcastMsg("Cleanup init options");
+    MOTOROS2_MEM_TRACE_START(options_fini);
+    ret = rcl_init_options_fini(&g_microRosNodeInfo.initOptions);
+    MOTOROS2_MEM_TRACE_REPORT(options_fini);
+    if (ret != RCL_RET_OK)
+        Ros_Debug_BroadcastMsg("Failed cleaning up init options: %d", ret);
 
     MOTOROS2_MEM_TRACE_REPORT(comm_exec_fini);
 }
@@ -318,8 +337,10 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
 
     mpSemTake(semCommunicationExecutorStatus, NO_WAIT);
 
+    MOTOROS2_MEM_TRACE_START(executor_init_stuff);
     //---------------------------------
     //Create timers
+    MOTOROS2_MEM_TRACE_START(timer_inits);
     rc = rclc_timer_init_default(&timerPingAgent, &g_microRosNodeInfo.support, RCL_MS_TO_NS(PERIOD_COMMUNICATION_PING_AGENT_MS), Ros_Communication_PingAgentConnection);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_TIMER_INIT_PING, "Failed creating rclc timer (%d)", (int)rc);
 
@@ -329,6 +350,7 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
     rc = rclc_timer_init_default(&timerMonitorUserLanState, &g_microRosNodeInfo.support,
         RCL_MS_TO_NS(PERIOD_COMMUNICATION_USERLAN_LINK_CHECK_MS),
         Ros_Communication_MonitorUserLanState);
+    MOTOROS2_MEM_TRACE_REPORT(timer_inits);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_TIMER_INIT_USERLAN_MONITOR,
         "Failed creating rclc timer (%d)", (int)rc);
 
@@ -336,33 +358,40 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
     //Create executors
     rclc_executor_t executor_motion_control;
     executor_motion_control = rclc_executor_get_zero_initialized_executor();
-
+    MOTOROS2_MEM_TRACE_START(motion_control_executor_init);
     rc = rclc_executor_init(&executor_motion_control, &g_microRosNodeInfo.support.context, QUANTITY_OF_HANDLES_FOR_MOTION_EXECUTOR, &g_motoros2_Allocator);
+    MOTOROS2_MEM_TRACE_REPORT(motion_control_executor_init);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_CREATE_MOTION_EXECUTOR, "Failed creating motion control executor (%d)", (int)rc);
 
     rclc_executor_t executor_io_control;
     executor_io_control = rclc_executor_get_zero_initialized_executor();
-
+    MOTOROS2_MEM_TRACE_START(io_control_executor_init);
     rc = rclc_executor_init(&executor_io_control, &g_microRosNodeInfo.support.context, QUANTITY_OF_HANDLES_FOR_IO_EXECUTOR, &g_motoros2_Allocator);
+    MOTOROS2_MEM_TRACE_REPORT(io_control_executor_init);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_CREATE_IO_EXECUTOR, "Failed creating I/O control executor (%d)", (int)rc);
-
     //==========================================================
     //Add entities to motion executor
     //
     // WARNING: Be sure to update QUANTITY_OF_HANDLES_FOR_MOTION_EXECUTOR
     //
+    MOTOROS2_MEM_TRACE_START(motion_control_executor_add_timers);
     rc = rclc_executor_add_timer(&executor_motion_control, &timerPingAgent);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_TIMER_ADD_PING, "Failed adding timer (%d)", (int)rc);
 
     rc = rclc_executor_add_timer(&executor_motion_control, &timerPublishActionFeedback);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_TIMER_ADD_ACTION_FB, "Failed adding timer (%d)", (int)rc);
 
+    MOTOROS2_MEM_TRACE_REPORT(motion_control_executor_add_timers);
     //NOTE: add userlan monitor timer to the io executor, to prevent timerPingAgent
     //from blocking it in case agent connection is lost (ie: ping needs to time out)
+    MOTOROS2_MEM_TRACE_START(io_control_executor_add_timers);
     rc = rclc_executor_add_timer(&executor_io_control, &timerMonitorUserLanState);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_TIMER_ADD_USERLAN_MONITOR,
         "Failed adding timer (%d)", (int)rc);
 
+    MOTOROS2_MEM_TRACE_REPORT(io_control_executor_add_timers);
+
+    MOTOROS2_MEM_TRACE_START(motion_control_executor_add_action);
     rc = rclc_executor_add_action_server(&executor_motion_control,
         &g_actionServerFollowJointTrajectory,
         1,
@@ -371,8 +400,10 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
         Ros_ActionServer_FJT_Goal_Received,
         Ros_ActionServer_FJT_Goal_Cancel,
         &g_actionServerFollowJointTrajectory);
+    Ros_Debug_BroadcastMsg("g_actionServer_FJT_SendGoal_Request__sizeof: %d", g_actionServer_FJT_SendGoal_Request__sizeof);
+    MOTOROS2_MEM_TRACE_REPORT(motion_control_executor_add_action);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_ADD_FJT_SERVER, "Failed adding FJT server (%d)", (int)rc);
-
+    MOTOROS2_MEM_TRACE_START(motion_control_executor_add_services);
     rc = rclc_executor_add_service(
         &executor_motion_control, &g_serviceStopTrajMode, &g_messages_StopTrajMode.request,
         &g_messages_StopTrajMode.response, Ros_ServiceStopTrajMode_Trigger);
@@ -402,13 +433,14 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
         &executor_motion_control, &g_serviceSelectMotionTool, &g_messages_SelectMotionTool.request,
         &g_messages_SelectMotionTool.response, Ros_ServiceSelectMotionTool_Trigger);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_ADD_SERVICE_SELECT_MOTION_TOOL, "Failed adding service (%d)", (int)rc);
-
+    MOTOROS2_MEM_TRACE_REPORT(motion_control_executor_add_services);
     //==========================================================
     //Add entities to I/O executor
     //
     // WARNING: Be sure to update QUANTITY_OF_HANDLES_FOR_IO_EXECUTOR
     //
     // 
+    MOTOROS2_MEM_TRACE_START(io_control_executor_add_service);
     rc = rclc_executor_add_service(
         &executor_io_control, &g_serviceReadSingleIO, &g_messages_ReadWriteIO.req_single_io_read,
         &g_messages_ReadWriteIO.resp_single_io_read, Ros_ServiceReadSingleIO_Trigger);
@@ -438,13 +470,16 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
         &executor_io_control, &g_serviceWriteMRegister, &g_messages_ReadWriteIO.req_mreg_write,
         &g_messages_ReadWriteIO.resp_mreg_write, Ros_ServiceWriteMRegister_Trigger);
     motoRosAssert_withMsg(rc == RCL_RET_OK, SUBCODE_FAIL_ADD_SERVICE_WRITE_M_REG, "Failed adding service (%d)", (int)rc);
-
+    MOTOROS2_MEM_TRACE_REPORT(io_control_executor_add_service);
     //===========================================================
 
+    MOTOROS2_MEM_TRACE_START(executors_prepare);
     // Optional prepare for avoiding allocations during spin
     rclc_executor_prepare(&executor_motion_control);
     rclc_executor_prepare(&executor_io_control);
-
+    MOTOROS2_MEM_TRACE_REPORT(executors_prepare);
+    MOTOROS2_MEM_TRACE_REPORT(executor_init_stuff);
+    MOTOROS2_MEM_TRACE_START(executors_executing);
     //===========================================================
     //===========================================================
     //===========================================================
@@ -507,13 +542,18 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
             }
         }
     }
-
+    MOTOROS2_MEM_TRACE_REPORT(executors_executing);
+    MOTOROS2_MEM_TRACE_START(all_executor_cleanup);
     Ros_Debug_BroadcastMsg("Cleanup motion control executor");
+    MOTOROS2_MEM_TRACE_START(motion_control_executor_fini);    
     rclc_executor_fini(&executor_motion_control);
-
+    MOTOROS2_MEM_TRACE_REPORT(motion_control_executor_fini);
     Ros_Debug_BroadcastMsg("Cleanup I/O control executor");
+    MOTOROS2_MEM_TRACE_START(io_control_executor_fini);    
     rclc_executor_fini(&executor_io_control);
+    MOTOROS2_MEM_TRACE_REPORT(io_control_executor_fini);
 
+    MOTOROS2_MEM_TRACE_START(timer_cleanup);
     Ros_Debug_BroadcastMsg("Cleanup timer for UserLan link state monitor");
     rc = rcl_timer_fini(&timerMonitorUserLanState);
     if (rc != RCL_RET_OK)
@@ -528,9 +568,10 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
     rc = rcl_timer_fini(&timerPingAgent);
     if (rc != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up ping timer: %d", rc);
-
+    MOTOROS2_MEM_TRACE_REPORT(timer_cleanup);
+    MOTOROS2_MEM_TRACE_REPORT(all_executor_cleanup);
     //notify main task that this has finished
     mpSemGive(semCommunicationExecutorStatus);
-
+    Ros_Debug_BroadcastMsg("Final remaining memory: %d", mpNumBytesFree());
     mpDeleteSelf;
 }

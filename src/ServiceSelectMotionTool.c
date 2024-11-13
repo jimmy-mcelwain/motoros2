@@ -24,7 +24,7 @@ void Ros_ServiceSelectMotionTool_Initialize()
     rcl_ret_t ret = rclc_service_init_default(&g_serviceSelectMotionTool, &g_microRosNodeInfo.node, type_support, SERVICE_NAME_SELECT_MOTION_TOOL);
     motoRosAssert_withMsg(ret == RCL_RET_OK, SUBCODE_FAIL_INIT_SERVICE_SELECT_MOTION_TOOL, "Failed to init service (%d)", (int)ret);
 
-    rosidl_runtime_c__String__init(&g_messages_SelectMotionTool.response.message);
+    motoros2_interfaces__srv__SelectMotionTool_Response__init(&g_messages_SelectMotionTool.response);
 
     MOTOROS2_MEM_TRACE_REPORT(svc_select_tool_init);
 }
@@ -38,8 +38,7 @@ void Ros_ServiceSelectMotionTool_Cleanup()
     ret = rcl_service_fini(&g_serviceSelectMotionTool, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up select tool service: %d", ret);
-    rosidl_runtime_c__String__fini(&g_messages_SelectMotionTool.response.message);
-
+    motoros2_interfaces__srv__SelectMotionTool_Response__fini(&g_messages_SelectMotionTool.response);
     MOTOROS2_MEM_TRACE_REPORT(svc_select_tool_fini);
 }
 

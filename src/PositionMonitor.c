@@ -49,6 +49,7 @@ void Ros_PositionMonitor_Initialize()
 
 static void Ros_PositionMonitor_Initialize_GlobalJointStatePublisher(rmw_qos_profile_t const* const qos_profile)
 {
+    MOTOROS2_MEM_TRACE_START(joint_state_global);
     int iterator = 0;
     int grpIndex, jointIndex;
 
@@ -102,10 +103,12 @@ static void Ros_PositionMonitor_Initialize_GlobalJointStatePublisher(rmw_qos_pro
     rosidl_runtime_c__float64__Sequence__init(&g_messages_PositionMonitor.jointStateAllGroups->position, g_Ros_Controller.totalAxesCount);
     rosidl_runtime_c__float64__Sequence__init(&g_messages_PositionMonitor.jointStateAllGroups->velocity, g_Ros_Controller.totalAxesCount);
     rosidl_runtime_c__float64__Sequence__init(&g_messages_PositionMonitor.jointStateAllGroups->effort, g_Ros_Controller.totalAxesCount);
+    MOTOROS2_MEM_TRACE_REPORT(joint_state_global);
 }
 
 static void Ros_PositionMonitor_Initialize_PerGroupJointStatePublisher(rmw_qos_profile_t const* const qos_profile, CtrlGroup* const ctrlGroup, int grpIndex)
 {
+    MOTOROS2_MEM_TRACE_START(joint_state_per_group);
     //create joint publisher
     char formatBuffer[MAX_JOINT_NAME_LENGTH];
     snprintf(formatBuffer, MAX_JOINT_NAME_LENGTH, "ctrl_groups/%s/%s", Ros_CtrlGroup_GRP_ID_String[ctrlGroup->groupId], TOPIC_NAME_JOINT_STATES);
@@ -151,10 +154,12 @@ static void Ros_PositionMonitor_Initialize_PerGroupJointStatePublisher(rmw_qos_p
     rosidl_runtime_c__float64__Sequence__init(&ctrlGroup->msgJointState->position, ctrlGroup->numAxes);
     rosidl_runtime_c__float64__Sequence__init(&ctrlGroup->msgJointState->velocity, ctrlGroup->numAxes);
     rosidl_runtime_c__float64__Sequence__init(&ctrlGroup->msgJointState->effort, ctrlGroup->numAxes);
+    MOTOROS2_MEM_TRACE_REPORT(joint_state_per_group);
 }
 
 static void Ros_PositionMonitor_Initialize_TfPublisher(rmw_qos_profile_t const* const qos_profile, int totalRobots)
 {
+    MOTOROS2_MEM_TRACE_START(tf_publisher);
     char formatBuffer[MAX_TF_FRAME_NAME_LENGTH];
 
     // default TF topic name
@@ -183,11 +188,12 @@ static void Ros_PositionMonitor_Initialize_TfPublisher(rmw_qos_profile_t const* 
 
     //--------------
     //create message for cartesian transform
+    Ros_Debug_BroadcastMsg("Num bytes free pre tf message create: %d", mpNumBytesFree());
     g_messages_PositionMonitor.transform = tf2_msgs__msg__TFMessage__create();
-
+    Ros_Debug_BroadcastMsg("Num bytes free post tf message create: %d", mpNumBytesFree());
     motoRosAssert(geometry_msgs__msg__TransformStamped__Sequence__init(&g_messages_PositionMonitor.transform->transforms, totalRobots * NUMBER_TRANSFORM_LINKS_PER_ROBOT),
                   SUBCODE_FAIL_ALLOCATE_TRANSFORM);
-
+    Ros_Debug_BroadcastMsg("Num bytes free post tf sequence init: %d", mpNumBytesFree());
     bzero(formatBuffer, MAX_TF_FRAME_NAME_LENGTH);
     int robotIterator = 0;
     const char* frame_prefix = g_nodeConfigSettings.tf_frame_prefix;
@@ -195,7 +201,7 @@ static void Ros_PositionMonitor_Initialize_TfPublisher(rmw_qos_profile_t const* 
     {
         snprintf(formatBuffer, MAX_TF_FRAME_NAME_LENGTH, "%sworld", frame_prefix);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_WorldToBase].header.frame_id, formatBuffer);
-
+       
         snprintf(formatBuffer, MAX_TF_FRAME_NAME_LENGTH, "%sr%d/base", frame_prefix, robotIterator + 1);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_WorldToBase].child_frame_id, formatBuffer);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_BaseToFlange].header.frame_id, formatBuffer);
@@ -204,7 +210,7 @@ static void Ros_PositionMonitor_Initialize_TfPublisher(rmw_qos_profile_t const* 
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_BaseToFlange].child_frame_id, formatBuffer);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_FlangeToTool0].header.frame_id, formatBuffer);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_FlangeToTcp].header.frame_id, formatBuffer);
-
+       
         snprintf(formatBuffer, MAX_TF_FRAME_NAME_LENGTH, "%sr%d/tool0", frame_prefix, robotIterator + 1);
         rosidl_runtime_c__String__assign(&g_messages_PositionMonitor.transform->transforms.data[i + tfLink_FlangeToTool0].child_frame_id, formatBuffer);
 
@@ -213,6 +219,7 @@ static void Ros_PositionMonitor_Initialize_TfPublisher(rmw_qos_profile_t const* 
 
         robotIterator += 1;
     }
+    MOTOROS2_MEM_TRACE_REPORT(tf_publisher);
 }
 
 void Ros_PositionMonitor_Cleanup()
@@ -220,7 +227,7 @@ void Ros_PositionMonitor_Cleanup()
     MOTOROS2_MEM_TRACE_START(pos_mon_fini);
 
     rcl_ret_t ret;
-
+    MOTOROS2_MEM_TRACE_START(joint_state_per_group_fini);
     for (int groupNum = 0; groupNum < g_Ros_Controller.numGroup; groupNum += 1)
     {
         CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNum];
@@ -234,19 +241,21 @@ void Ros_PositionMonitor_Cleanup()
             sensor_msgs__msg__JointState__destroy(ctrlGroup->msgJointState);
         }
     }
-
+    MOTOROS2_MEM_TRACE_REPORT(joint_state_per_group_fini);
+    MOTOROS2_MEM_TRACE_START(joint_state_global_fini);
     Ros_Debug_BroadcastMsg("Cleanup publisher joint state");
     ret = rcl_publisher_fini(&g_publishers_PositionMonitor.jointStateAllGroups, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up global jointstate publisher: %d", ret);
     sensor_msgs__msg__JointState__destroy(g_messages_PositionMonitor.jointStateAllGroups);
-
+    MOTOROS2_MEM_TRACE_REPORT(joint_state_global_fini);
+    MOTOROS2_MEM_TRACE_START(tf_publisher_fini);
     Ros_Debug_BroadcastMsg("Cleanup TF publisher");
     ret = rcl_publisher_fini(&g_publishers_PositionMonitor.transform, &g_microRosNodeInfo.node);
     if (ret != RCL_RET_OK)
         Ros_Debug_BroadcastMsg("Failed cleaning up TF publisher: %d", ret);
     tf2_msgs__msg__TFMessage__destroy(g_messages_PositionMonitor.transform);
-
+    MOTOROS2_MEM_TRACE_REPORT(tf_publisher_fini);
     MOTOROS2_MEM_TRACE_REPORT(pos_mon_fini);
 }
 
