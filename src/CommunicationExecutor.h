@@ -18,10 +18,12 @@
 //      service reset                                       1
 //      service start_traj_mode                             1
 //      service start_point_queue_mode                      1
+//      service start_joint_jog_mode                        1
 //      service stop_traj_mode                              1
 //      service queue_traj_point                            1
 //      service select_tool                                 1
-#define QUANTITY_OF_HANDLES_FOR_MOTION_EXECUTOR             (9)
+//      subscription read joint jog                         1
+#define QUANTITY_OF_HANDLES_FOR_MOTION_EXECUTOR             (11)
 
 // total number of handles =
 //      timers +                                            1

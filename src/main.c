@@ -126,11 +126,14 @@ void RosInitTask()
         Ros_PositionMonitor_Initialize();
         Ros_ActionServer_FJT_Initialize(); //initialize action server - FollowJointTrajectory
 
+        Ros_SubscriptionJointJog_Initialize();
+
         Ros_ServiceQueueTrajPoint_Initialize();
         Ros_ServiceReadWriteIO_Initialize();
         Ros_ServiceResetError_Initialize();
         Ros_ServiceStartTrajMode_Initialize();
         Ros_ServiceStartPointQueueMode_Initialize();
+        Ros_ServiceStartJointJogMode_Initialize();
         Ros_ServiceStopTrajMode_Initialize();
         Ros_ServiceSelectMotionTool_Initialize();
 
@@ -208,10 +211,12 @@ void RosInitTask()
         Ros_ServiceStopTrajMode_Cleanup();
         Ros_ServiceStartTrajMode_Cleanup();
         Ros_ServiceStartPointQueueMode_Cleanup();
+        Ros_ServiceStartJointJogMode_Cleanup();
         Ros_ServiceResetError_Cleanup();
         Ros_ServiceReadWriteIO_Cleanup();
         Ros_ServiceQueueTrajPoint_Cleanup();
 
+        Ros_SubscriptionJointJog_Cleanup();
         Ros_ActionServer_FJT_Cleanup();
         Ros_PositionMonitor_Cleanup();
         Ros_Controller_Cleanup();

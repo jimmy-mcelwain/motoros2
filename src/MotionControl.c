@@ -713,7 +713,8 @@ void Ros_MotionControl_IncMoveLoopStart() //<-- IP_CLK priority task
 
     isMissingPulse = FALSE;
     hasUnprocessedData = FALSE;
-
+    uint32_t lastNanoStamp = 0;
+    uint32_t lastSecStamp = 0;
     Ros_Debug_BroadcastMsg("IncMoveTask Started");
 
     bzero(&moveData, sizeof(moveData));
@@ -726,12 +727,73 @@ void Ros_MotionControl_IncMoveLoopStart() //<-- IP_CLK priority task
         ctrlGrpData.sCtrlGrp = g_Ros_Controller.ctrlGroups[i]->groupId;
         mpGetPulsePos(&ctrlGrpData, &prevPulsePosData[i]);
     }
-
+    MP_IO_INFO inf;
+    USHORT some;
     FOREVER
     {
         mpClkAnnounce(MP_INTERPOLATION_CLK);
+        if (Ros_MotionControl_ActiveMotionMode == MOTION_MODE_JOINTJOG)
+        {
 
-        if (Ros_Controller_IsMotionReady()
+            if (g_messages_JointJog.header.stamp.nanosec != lastNanoStamp || g_messages_JointJog.header.stamp.sec != lastSecStamp)
+            {
+                lastNanoStamp = g_messages_JointJog.header.stamp.nanosec;
+                lastSecStamp = g_messages_JointJog.header.stamp.sec;
+
+                bzero(moveData.grp_pos_info[0].pos, sizeof(moveData.grp_pos_info[0].pos));
+                inf.ulAddr = 1000320;
+
+                mpReadIO(&inf,&some, 1);
+                moveData.grp_pos_info[0].pos[0] = some;
+                moveData.grp_pos_info[0].pos_tag.data[2] = 0;
+                moveData.grp_pos_info[0].pos_tag.data[3] = MP_INC_PULSE_DTYPE;
+                moveData.grp_pos_info[0].pos_tag.data[4] = 0;
+
+                // Send pulse increment to the controller command position
+                ret = mpExRcsIncrementMove(&moveData);
+            }
+            else
+            {
+                ret = 0;
+            }
+            if (ret != 0)
+            {
+                // Failure: command rejected by controller.
+                // Update controller status to help identify cause
+                Ros_Controller_IoStatusUpdate();
+
+                if (ret == E_EXRCS_CTRL_GRP) {
+                    Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned: %d (ctrl_grp = %d)", ret, moveData.ctrl_grp);
+                }
+                else if (ret == E_EXRCS_IMOV_UNREADY && g_Ros_Controller.bPFLEnabled)
+                {
+                    // Check if this is caused by a known cause (E-Stop, Hold, Alarm, Error)
+                    if (!Ros_Controller_IsEStop() && !Ros_Controller_IsHold()
+                        && !Ros_Controller_IsAlarm() && !Ros_Controller_IsError()) {
+                        Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned UNREADY: %d (Could be PFL Active)", E_EXRCS_IMOV_UNREADY);
+                        g_Ros_Controller.bPFLduringRosMove = TRUE;
+                    }
+                }
+                else if (ret == E_EXRCS_PFL_FUNC_BUSY && g_Ros_Controller.bPFLEnabled)
+                {
+                    Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned PFL Active");
+                    g_Ros_Controller.bPFLduringRosMove = TRUE;
+                }
+                else if (ret == E_EXRCS_UNDER_ENERGY_SAVING)
+                {
+                    Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned Eco mode enabled");
+                }
+                else if (ret == E_EXRCS_IMOV_UNREADY)
+                {
+                    Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned -1 (Not executing WAIT instruction)");
+                }
+                else
+                {
+                    Ros_Debug_BroadcastMsg("mpExRcsIncrementMove returned: %d", ret);
+                }
+            }
+        }
+        else if (Ros_Controller_IsMotionReady()
             && (Ros_MotionControl_HasDataInQueue() || hasUnprocessedData)
             && !g_Ros_Controller.bStopMotion)
         {

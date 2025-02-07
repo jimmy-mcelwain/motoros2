@@ -95,6 +95,12 @@
     <Filter Include="MotoPlus Libraries\micro-ROS">
       <UniqueIdentifier>{e6632634-d563-43fc-b395-cd505f5e6715}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Subscribers">
+      <UniqueIdentifier>{22ca097a-fa1f-49a1-801d-27c4a68b6963}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Subscribers">
+      <UniqueIdentifier>{5e1eb6c7-b537-4bff-946a-08648eb7c4bd}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="DX200_humbleCompilerArguments.mps">
@@ -268,7 +274,7 @@
     <None Include="..\libmicroros_yrc1000_jazzy\libmicroros.yrcLib_jazzy">
       <Filter>MotoPlus Libraries\micro-ROS</Filter>
     </None>
-	<None Include="..\doc\network_configuration.md">
+    <None Include="..\doc\network_configuration.md">
       <Filter>Docs\doc</Filter>
     </None>
   </ItemGroup>
@@ -359,6 +365,12 @@
     </ClCompile>
     <ClCompile Include="Tests_ActionServer_FJT.c">
       <Filter>Source Files\Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="SubscriptionJointJog.c">
+      <Filter>Source Files\Subscribers</Filter>
+    </ClCompile>
+    <ClCompile Include="ServiceStartJointJogMode.c">
+      <Filter>Source Files\Services</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -472,6 +484,12 @@
     </ClInclude>
     <ClInclude Include="Tests_ActionServer_FJT.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SubscriptionJointJog.h">
+      <Filter>Header Files\Subscribers</Filter>
+    </ClInclude>
+    <ClInclude Include="ServiceStartJointJogMode.h">
+      <Filter>Header Files\Services</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

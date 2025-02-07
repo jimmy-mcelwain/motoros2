@@ -400,6 +400,11 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
     motoRos_RCLAssertOK_withMsg(rc, SUBCODE_FAIL_ADD_SERVICE_START_QUEUE_MODE, "Failed adding service (%d)", (int)rc);
 
     rc = rclc_executor_add_service(
+        &executor_motion_control, &g_services_StartJointJogMode, &g_messages_StartJointJogMode.request,
+        &g_messages_StartJointJogMode.response, Ros_ServiceStartJointJogMode_Trigger);
+    motoRos_RCLAssertOK_withMsg(rc, SUBCODE_FAIL_ADD_SERVICE_READ_SINGLE_IO, "Failed adding service (%d)", (int)rc);
+
+    rc = rclc_executor_add_service(
         &executor_motion_control, &g_serviceQueueTrajPoint, g_messages_QueueTrajPoint.request,
         g_messages_QueueTrajPoint.response, Ros_ServiceQueueTrajPoint_Trigger);
     motoRos_RCLAssertOK_withMsg(rc, SUBCODE_FAIL_ADD_SERVICE_QUEUE_POINT, "Failed adding service (%d)", (int)rc);
@@ -408,6 +413,10 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
         &executor_motion_control, &g_serviceSelectMotionTool, &g_messages_SelectMotionTool.request,
         &g_messages_SelectMotionTool.response, Ros_ServiceSelectMotionTool_Trigger);
     motoRos_RCLAssertOK_withMsg(rc, SUBCODE_FAIL_ADD_SERVICE_SELECT_MOTION_TOOL, "Failed adding service (%d)", (int)rc);
+
+    rc = rclc_executor_add_subscription(
+        &executor_motion_control, &g_subscriptions_JointJog, &g_messages_JointJog, Ros_SubscriptionJointJog_Callback, ON_NEW_DATA);
+    motoRos_RCLAssertOK_withMsg(rc, SUBCODE_FAIL_ADD_SERVICE_STOP_TRAJ, "Failed adding service (%d)", (int)rc);
 
     //==========================================================
     //Add entities to I/O executor

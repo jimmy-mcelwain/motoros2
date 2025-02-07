@@ -434,10 +434,12 @@
     <ClCompile Include="MemoryAllocation.c" />
     <ClCompile Include="ServiceQueueTrajPoint.c" />
     <ClCompile Include="ServiceReadWriteIO.c" />
+    <ClCompile Include="ServiceStartJointJogMode.c" />
     <ClCompile Include="ServiceStartPointQueueMode.c" />
     <ClCompile Include="ServiceStopTrajMode.c" />
     <ClCompile Include="ServiceStartTrajMode.c" />
     <ClCompile Include="ServiceSelectMotionTool.c" />
+    <ClCompile Include="SubscriptionJointJog.c" />
     <ClCompile Include="Tests_ActionServer_FJT.c" />
     <ClCompile Include="Tests_ControllerStatusIO.c" />
     <ClCompile Include="Tests_CtrlGroup.c" />
@@ -468,10 +470,12 @@
     <ClInclude Include="..\lib\MotoPlusExterns.h" />
     <ClInclude Include="ServiceQueueTrajPoint.h" />
     <ClInclude Include="ServiceReadWriteIO.h" />
+    <ClInclude Include="ServiceStartJointJogMode.h" />
     <ClInclude Include="ServiceStartPointQueueMode.h" />
     <ClInclude Include="ServiceStopTrajMode.h" />
     <ClInclude Include="ServiceStartTrajMode.h" />
     <ClInclude Include="ServiceSelectMotionTool.h" />
+    <ClInclude Include="SubscriptionJointJog.h" />
     <ClInclude Include="Tests_ActionServer_FJT.h" />
     <ClInclude Include="Tests_ControllerStatusIO.h" />
     <ClInclude Include="Tests_CtrlGroup.h" />

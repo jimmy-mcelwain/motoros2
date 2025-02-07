@@ -63,6 +63,7 @@
 #include <trajectory_msgs/msg/joint_trajectory.h>
 #include <trajectory_msgs/msg/joint_trajectory_point.h>
 #include <control_msgs/action/follow_joint_trajectory.h>
+#include <control_msgs/msg/joint_jog.h>
 #include <motoros2_interfaces/srv/read_single_io.h>
 #include <motoros2_interfaces/srv/read_group_io.h>
 #include <motoros2_interfaces/srv/write_single_io.h>
@@ -101,6 +102,8 @@
 #include "ServiceStopTrajMode.h"
 #include "ServiceSelectMotionTool.h"
 #include "MotionControl.h"
+#include "SubscriptionJointJog.h"
+#include "ServiceStartJointJogMode.h"
 #include "ConfigFile.h"
 #include "RosApiNameConstants.h"
 #include "TimeConversionUtils.h"
