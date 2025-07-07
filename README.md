@@ -86,6 +86,7 @@ The following sections document how to download, install, configure, use and tro
   - [No support for partial goals](#no-support-for-partial-goals)
   - [Upper limit to publishing frequency](#upper-limit-to-publishing-frequency)
   - [Incorrect transform tree origin with multi-robot setups](#incorrect-transform-tree-origin-with-multi-robot-setups)
+  - [Best-effort reliability topics fail to publish large messages](#best-effort-reliability-topics-fail-to-publish-large-messages)
 - [Provisional roadmap](#provisional-roadmap)
 - [Frequently Asked Questions](doc/faq.md)
 - [Troubleshooting](doc/troubleshooting.md)
@@ -818,16 +819,24 @@ Refer to the relevant Yaskawa Motoman documentation for more information on how 
 
 After robot-calibration, the transform between the shared `world` frame and each robot's `base` frame will be known, and MotoROS2 will include it in the transforms it broadcasts.
 
-### Some group combinations won't publish data
+### Best-effort reliability topics fail to publish large messages
 
-**Description**: it has been observed that an R1+R2+S1 system will not publish data `/joint_states` or `/tf`.
-All other topics and services work as expected.
+**Description**: Topics with QoS set to best-effort reliability will fail to publish large messages.
+This behavior is most commonly observed with `/joint_states`.
+As an example, if your system has a large number of joints or long joint names which result in a large message, `/joint_states` will not be published.
+This can occur with other best-effort reliability topics as well.
+The root cause of this behavior is described [here](https://github.com/eProsima/Micro-XRCE-DDS-Client/issues/394#issuecomment-2519526357).
 
-**Work-around**: such a multi-group system would need to be broken up into a independent systems.
-(E.g. `R1+R2+S1` would be broken up into `R1+S1` and another `R1`).
-
-The cause of this behavior is unknown.
-The issue is being investigated.
+**Work-arounds**: There are two options for fixing this behavior.
+1. Reduce the length of your messages.
+For example, you can reduce the length of the `/joint_states` message by modifying `joint_names` in [the configuration file](#configuration) to reduce the length of joint names.
+Follow [Updating the configuration](#updating-the-configuration) to propagate this change to MotoROS2.
+The current MTU is `2048` bytes, so take that into consideration when reducing message size.
+1. Change your topic QoS to reliable reliability by setting it to `default` in [the configuration file](#configuration).
+Follow [Updating the configuration](#updating-the-configuration) to propagate this change to MotoROS2.
+Be aware that changing publisher QoS settings may break compatibility between subscribers and publishers.
+You may have to change the QoS settings of subscribers in response.
+See [Default QoS Settings](#default-qos-settings) for more information.
 
 ## Provisional roadmap
 
