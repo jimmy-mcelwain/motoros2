@@ -112,7 +112,7 @@ void QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(LONG rx_deg, LONG ry_deg
     q->w = c1 * c2 * c3 + s1 * s2 * s3;
 }
 
-void QuatConversion_GeomMsgsQuaternion_To_MpCoordOrient(const Quaternion* const q, LONG* rx_deg, LONG* ry_deg, LONG* rz_deg)
+void QuatConversion_GeomMsgsQuaternion_To_EulerRad(const Quaternion* const q, double* rx, double* ry, double* rz)
 {
     const double x = q->x, y = q->y, z = q->z, w = q->w;
     const double x2 = x + x, y2 = y + y, z2 = z + z;
@@ -153,20 +153,30 @@ void QuatConversion_GeomMsgsQuaternion_To_MpCoordOrient(const Quaternion* const 
     (void) m13;
     (void) m23;
 
-    // convert radians to Euler anles
-    //
-    // NOTE: assumption: Euler angles should be in 0.1 milli-degrees (as those
-    //       are used for MP_COORD orientation fields)
-    *ry_deg = (LONG)(asin(-QuatConversion_clamp(m31, -1, 1)) * DEGREES_PER_RAD * 10000);
+    // convert rotation matrix to Euler angles (radians)
+    *ry = asin(-QuatConversion_clamp(m31, -1, 1));
 
-    if (abs(m31) < 0.9999999)
+    if (fabs(m31) < 0.9999999)
     {
-        *rx_deg = (LONG)(atan2(m32, m33) * DEGREES_PER_RAD * 10000);
-        *rz_deg = (LONG)(atan2(m21, m11) * DEGREES_PER_RAD * 10000);
+        *rx = atan2(m32, m33);
+        *rz = atan2(m21, m11);
     }
     else
     {
-        *rx_deg = 0;
-        *rz_deg = (LONG)(atan2(-m12, m22) * DEGREES_PER_RAD * 10000);
+        *rx = 0;
+        *rz = atan2(-m12, m22);
     }
+}
+
+void QuatConversion_GeomMsgsQuaternion_To_MpCoordOrient(const Quaternion* const q, LONG* rx_deg, LONG* ry_deg, LONG* rz_deg)
+{
+    double rx, ry, rz;
+
+    QuatConversion_GeomMsgsQuaternion_To_EulerRad(q, &rx, &ry, &rz);
+
+    // NOTE: assumption: Euler angles should be in 0.1 milli-degrees (as those
+    //       are used for MP_COORD orientation fields)
+    *rx_deg = (LONG)(rx * DEGREES_PER_RAD * 10000);
+    *ry_deg = (LONG)(ry * DEGREES_PER_RAD * 10000);
+    *rz_deg = (LONG)(rz * DEGREES_PER_RAD * 10000);
 }
