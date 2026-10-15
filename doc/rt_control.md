@@ -49,16 +49,31 @@ If a command is not received within `timeout_for_rt_msg` (default: 5 seconds; `-
 At that point, a new session must be started by calling `start_rt_mode` again.
 A "keep-alive" can be used by sending a command with zero increments.
 
-The session is also dropped, without a reply, if:
+The session is also dropped if:
 
 - a command has the wrong size, `version` or `packetType`
 - a command is received from an IP address other than the one which sent the first valid command (that host owns the session)
 - the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
 - an increment is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
 - the robot rejects the increment (ex: E-stop, HOLD, alarm, PFL, servo power off)
+- `stop_traj_mode` is called, or the micro-ROS agent disconnects
 
-The reason is printed to the debug log.
-Therefore, if the client does not receive a reply packet within this amount of time, then it should be assumed that the session is dead.
+The R/T port accepts packets on every network interface of the controller, and there is no authentication.
+The session belongs to whichever host sends the first valid command after `start_rt_mode`, which doesn't have to be the host that called `start_rt_mode`.
+While a session is running, any packet from another IP address ends it (`MultipleSources`), even one which isn't an R/T command (ex: from a network scanner).
+Before the first command, such a packet ends it as an invalid command.
+So make sure that no other host sends packets to the R/T port while a session is running (ex: block the port for other hosts with a firewall in front of the controller).
+
+When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why.
+See [Session end](#session-end).
+More detail is printed to the debug log.
+
+MotoROS2 doesn't decelerate the robot: when commands stop arriving, or the session ends, no more motion is sent.
+So bring the robot to rest before ending a session (ex: before calling `stop_traj_mode`).
+The controller smooths the motion (on a GP12, the feedback trails the command by about 0.2 seconds), so the robot still slows down over a few tenths of a second, but that can still be too abrupt (ex: at high speed, or with a payload).
+
+The final reply is best-effort, as it is sent over UDP.
+Therefore, if the client does not receive a reply packet within `timeout_for_rt_msg` (returned by `start_rt_mode`), then it should still assume that the session is dead.
 
 The motion API only accepts whole units (pulses, micrometers and 0.0001 degrees).
 Increments are rounded to the nearest whole unit, and the rest is carried over to the next cycle, so small increments are not lost.
@@ -118,7 +133,7 @@ struct RtPacket
 
 The `version` must match the version number expected by the server.
 If it does not match, the session ends (`InvalidVersion`).
-The current version is `1`.
+The current version is `2`.
 
 #### Joints
 
@@ -180,7 +195,7 @@ enum CartesianIndices
 ### Data format (reply)
 
 The reply packet is a *packed* `RtReply` structure.
-This will echo the sequence ID, provide feedback position, and provide commanded position.
+This will echo the sequence ID, indicate whether the session is still active, provide feedback position, and provide commanded position.
 
 Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increment of the **previous** command cycle as sent.
 Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity.
@@ -194,6 +209,22 @@ Compare the commanded position in the reply with the expected one to see what ha
 struct RtReply
 {
     UINT32 sequenceEcho;
+
+    //See ReplyType enum.
+    //When a session ends for any reason, a final reply of type SessionEnded
+    //is sent. Its sequenceEcho is that of the last command which was
+    //executed. Its position data is read when the session ends (with the
+    //tools of that command).
+
+    UINT32 replyType;
+
+    //See EndReason enum. Only set when replyType is SessionEnded.
+
+    UINT32 endReason;
+
+    //Additional information about the endReason. See EndReason enum.
+
+    int endDetail;
 
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.
@@ -223,6 +254,34 @@ struct RtReply
 }
 ```
 
+### Session end
+
+```c
+enum ReplyType
+{
+    Feedback = 0,         //Reply to a command packet. The next command may be sent.
+    SessionEnded,         //The session has ended (see EndReason). No more replies will be sent.
+}
+
+enum EndReason
+{
+    None = 0,
+    StopRequested,        //stop_traj_mode was called, or the micro-ROS agent disconnected
+    Timeout,              //No command was received within timeout_for_rt_msg
+    InvalidPacketSize,    //endDetail: the number of bytes received
+    InvalidVersion,       //endDetail: the version received
+    InvalidPacketType,    //endDetail: the packetType received
+    MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
+    SequenceGap,          //endDetail: the sequenceId received
+    InvalidIncrement,     //Not a finite number, not a unit quaternion, or exceeds a speed limit
+    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
+    InternalError,        //See debug log
+}
+```
+
+If the session ends before any command has been executed, the final reply is only sent if a packet was rejected, and it is sent to the host which sent that packet.
+In that case, the position data is all zeros.
+
 ### Wire format
 
 All structures are packed (no padding) and little-endian.
@@ -237,7 +296,7 @@ The field sizes are:
 | Structure | Size (bytes) | Python `struct` format |
 | --------- | ------------ | ---------------------- |
 | `RtPacket` | 620 | `<iiI64d8i64x` |
-| `RtReply` | 2053 | `<I256d?` |
+| `RtReply` | 2065 | `<IIIi256d?` |
 | `RobotState` | 28 | `<7i` |
 
 `MAX_GROUPS` and `MP_GRP_AXES_NUM` are both `8`.
@@ -253,10 +312,11 @@ If either fragment is lost, the whole reply is lost.
 
 ## Deactivation
 
-Other motion modes may not be used at the same time as the real-time motion control server.
+Other motion modes may not be used at the same time as an R/T session.
 The service to start those modes will fail when invoked.
-By calling `stop_traj_mode`, the R/T server will be disposed.
+Calling `stop_traj_mode` ends the session (the final reply has `endReason` `StopRequested`).
 At that time, another motion mode may be used.
+The UDP port stays open, so a new session can be started with `start_rt_mode`.
 
 ## R/T Status Monitoring
 

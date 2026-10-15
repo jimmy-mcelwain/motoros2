@@ -8,7 +8,7 @@
 #ifndef MOTOROS2_REALTIME_MOTION_CONTROL_H
 #define MOTOROS2_REALTIME_MOTION_CONTROL_H
 
-#define VERSION_REAL_TIME_INTERFACE 1
+#define VERSION_REAL_TIME_INTERFACE 2
 
 #define PACKED __attribute__ ((__packed__))
 
@@ -24,6 +24,27 @@ typedef enum
     PacketType_Joint_Increments = 0,
     PacketType_Cart_Increments
 } PacketType;
+
+typedef enum
+{
+    ReplyType_Feedback = 0,         //Reply to a command packet. The next command may be sent.
+    ReplyType_SessionEnded,         //The session has ended (see EndReason). No more replies will be sent.
+} ReplyType;
+
+typedef enum
+{
+    EndReason_None = 0,
+    EndReason_StopRequested,        //stop_traj_mode was called, or the micro-ROS agent disconnected
+    EndReason_Timeout,              //No command was received within timeout_for_rt_msg
+    EndReason_InvalidPacketSize,    //endDetail: the number of bytes received
+    EndReason_InvalidVersion,       //endDetail: the version received
+    EndReason_InvalidPacketType,    //endDetail: the packetType received
+    EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
+    EndReason_SequenceGap,          //endDetail: the sequenceId received
+    EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, or exceeds a speed limit. See debug log.
+    EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
+    EndReason_InternalError,        //See debug log
+} EndReason;
 
 typedef enum
 {
@@ -117,6 +138,20 @@ typedef struct RtPacket_ RtPacket;
 struct RtReply_
 {
     UINT32 sequenceEcho;
+
+    //See ReplyType enum.
+    //When a session ends for any reason, a final reply of type ReplyType_SessionEnded is
+    //sent, so the client doesn't have to wait for a timeout. Its sequenceEcho is that of the
+    //last command which was executed. Its position data is read when the session ends (with
+    //the tools of that command). This is best-effort (UDP), so the client should still treat
+    //a missing reply as the end of the session.
+    UINT32 replyType;
+
+    //See EndReason enum. Only set when replyType is ReplyType_SessionEnded.
+    UINT32 endReason;
+
+    //Additional information about the endReason. See EndReason enum.
+    int endDetail;
 
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.

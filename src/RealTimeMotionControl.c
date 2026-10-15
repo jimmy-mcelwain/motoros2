@@ -54,7 +54,12 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     int client_addr_len = sizeof(client_addr);
 
     RtPacket incomingCommand;
+    RtPacket lastExecutedCommand;
     RtReply outgoingReply;
+
+    EndReason endReason = EndReason_InternalError;
+    int endDetail = 0;
+    bool bEndReplyToSender = false; //the session ended because of the packet which was just received
 
     UINT32 previousSequenceId = 0;
 
@@ -93,7 +98,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     //=========================================================================================
     while (TRUE)
     {
-        if (Ros_RtMotionControl_WaitForPacket() > 0)
+        int waitResult = Ros_RtMotionControl_WaitForPacket();
+        if (waitResult > 0)
         {
             bzero(&incomingCommand, sizeof(incomingCommand));
             client_addr_len = sizeof(client_addr);
@@ -101,6 +107,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             if (bytes_received < 0)
             {
                 Ros_Debug_BroadcastMsg("ERROR: recvFrom returned an error");
+                endReason = EndReason_InternalError;
                 break;
             }
 
@@ -111,6 +118,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 Ros_Debug_BroadcastMsg("ERROR: Received command packets from multiple sources (0x%08X and 0x%08X)",
                                         (UINT32)previous_client_addr.sin_addr.s_addr,
                                         (UINT32)client_addr.sin_addr.s_addr);
+                endReason = EndReason_MultipleSources;
+                endDetail = (int)client_addr.sin_addr.s_addr;
                 break; //drop the connection
             }
 
@@ -118,6 +127,9 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             {
                 Ros_Debug_BroadcastMsg("ERROR: Received a packet of [%d] bytes. RtPacket must be [%d] bytes.",
                                         bytes_received, (int)sizeof(RtPacket));
+                endReason = EndReason_InvalidPacketSize;
+                endDetail = bytes_received;
+                bEndReplyToSender = true;
                 break; //drop the connection
             }
 
@@ -126,6 +138,9 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             {
                 Ros_Debug_BroadcastMsg("ERROR: The command packet is version [%d]. It must be version [%d]",
                                         incomingCommand.version, VERSION_REAL_TIME_INTERFACE);
+                endReason = EndReason_InvalidVersion;
+                endDetail = incomingCommand.version;
+                bEndReplyToSender = true;
                 break; //drop the connection
             }
 
@@ -152,11 +167,19 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 Ros_Debug_BroadcastMsg("ERROR: Unexpected motion mode is active");
             }
             if (!packetTypeOK)
+            {
+                endReason = EndReason_InvalidPacketType;
+                endDetail = incomingCommand.packetType;
+                bEndReplyToSender = true;
                 break; //drop the connection
+            }
+
+            //Only the IP address identifies the commander. The port can change if the client
+            //reopens its socket, so keep the latest one for the final reply.
+            previous_client_addr = client_addr;
 
             if (bFirstRecv)
             {
-                previous_client_addr = client_addr;
                 //flag is cleared down below
 
                 //setup destination for status messages
@@ -182,18 +205,23 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             {
                 Ros_Debug_BroadcastMsg("ERROR: Missed too many command packets (prev: %u, new: %u)",
                     previousSequenceId, incomingCommand.sequenceId);
+                endReason = EndReason_SequenceGap;
+                endDetail = (int)incomingCommand.sequenceId;
+                bEndReplyToSender = true;
                 break; // Drop the connection
             }
 
+            bool bParsedOK;
             if (mode == MOTION_MODE_RT_JOINT)
-            {
-                if (!Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData))
-                    break; //drop the connection
-            }
+                bParsedOK = Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData);
             else
+                bParsedOK = Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData);
+
+            if (!bParsedOK)
             {
-                if (!Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData))
-                    break; //drop the connection
+                endReason = EndReason_InvalidIncrement;
+                bEndReplyToSender = true;
+                break; //drop the connection
             }
 
             motionDeviationDetected = Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex);
@@ -203,10 +231,14 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             if (ret != OK)
             {
                 Ros_Debug_BroadcastMsg("WARN: mpExRcsIncrementMove returned %d", ret);
+                endReason = EndReason_MotionRejected;
+                endDetail = ret;
+                bEndReplyToSender = true;
                 break; //drop the connection
             }
 
             bFirstRecv = false;
+            lastExecutedCommand = incomingCommand;
 
             // Wait for next interpolation cycle
             mpClkAnnounce(MP_INTERPOLATION_CLK);
@@ -214,6 +246,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             //send status back to the PC and notify it that I'm ready for another packet
             previousSequenceId = incomingCommand.sequenceId;
             Ros_RtMotionControl_PopulateReplyMessage(mode, &incomingCommand, &outgoingReply);
+            outgoingReply.replyType = ReplyType_Feedback;
+            outgoingReply.endReason = EndReason_None;
             outgoingReply.motionDeviationDetected = motionDeviationDetected;
 
             Ros_RtMotionControl_PurgeBufferedPackets(); //in case user sent multiple commands while this was sleeping
@@ -230,19 +264,51 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 }
             }
         }
+        else if (waitResult < 0)
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Waiting for a command packet failed (mpSelect returned %d)", waitResult);
+            endReason = EndReason_InternalError;
+            break;
+        }
         else
         {
             if (bRtStopRequested)
+            {
                 Ros_Debug_BroadcastMsg("Stop requested");
+                endReason = EndReason_StopRequested;
+            }
             else
+            {
                 Ros_Debug_BroadcastMsg("No packets received for %d milliseconds", g_nodeConfigSettings.timeout_for_rt_msg);
+                endReason = EndReason_Timeout;
+            }
             break;
         }
     }
 
     mpDeleteTask(tidRobotStatus);
 
-    Ros_Debug_BroadcastMsg("Ending Rt Session");
+    //=========================================================================================
+    //Tell the client why the session ended, so it doesn't have to wait for a timeout.
+    //Once there is a commander, only it is told. (client_addr may belong to another sender.)
+    //Before that, only the sender of a rejected first packet is told.
+    if (!bFirstRecv || bEndReplyToSender)
+    {
+        struct sockaddr_in* endDestination = bFirstRecv ? &client_addr : &previous_client_addr;
+
+        if (bFirstRecv)
+            bzero(&outgoingReply, sizeof(outgoingReply)); //nothing has been executed yet
+        else
+            Ros_RtMotionControl_PopulateReplyMessage(mode, &lastExecutedCommand, &outgoingReply);
+
+        outgoingReply.replyType = ReplyType_SessionEnded;
+        outgoingReply.endReason = endReason;
+        outgoingReply.endDetail = endDetail;
+
+        mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)endDestination, sizeof(struct sockaddr_in));
+    }
+
+    Ros_Debug_BroadcastMsg("Ending Rt Session (reason: %d)", endReason);
 
     //Ros_RtMotionControl_StopSession waits for this
     bRtSessionRunning = FALSE;
