@@ -44,6 +44,28 @@ void Ros_ServiceStartRtMode_Cleanup()
     MOTOROS2_MEM_TRACE_REPORT(svc_start_rt_mode_fini);
 }
 
+//Cartesian increments are only supported for robots (no positioners or base tracks).
+//This is checked here, rather than in the R/T task, so the client is told why the
+//session can't start.
+static BOOL Ros_ServiceStartRtMode_IsCartesianSupported(rosidl_runtime_c__String* responseMessage)
+{
+    char output[MOTION_START_ERROR_MESSAGE_LENGTH] = { 0 };
+
+    for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
+    {
+        if (!Ros_CtrlGroup_IsRobot(g_Ros_Controller.ctrlGroups[groupIndex]))
+        {
+            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH,
+                "%s: Cartesian control mode is only supported when all control groups are robots (group [%d] is not)",
+                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_INVALID_SELECTION), groupIndex);
+            rosidl_runtime_c__String__assign(responseMessage, output);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
 {
     StartRtMode_Request* request = (StartRtMode_Request*)request_msg;
@@ -54,15 +76,17 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
     response->period = g_Ros_Controller.interpolPeriod;
     response->timeout_for_rt_msg = g_nodeConfigSettings.timeout_for_rt_msg;
     response->max_sequence_diff_for_rt_msg = g_nodeConfigSettings.max_sequence_diff_for_rt_msg;
-    
+
     MOTION_MODE mm = MOTION_MODE_INACTIVE;
-    
+
     if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN)
         mm = MOTION_MODE_RT_CARTESIAN;
     else if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__JOINT_ANGLES)
         mm = MOTION_MODE_RT_JOINT;
 
-    if (mm != MOTION_MODE_INACTIVE)
+    if (mm == MOTION_MODE_RT_CARTESIAN && !Ros_ServiceStartRtMode_IsCartesianSupported(&response->message))
+        response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
+    else if (mm != MOTION_MODE_INACTIVE)
         response->result_code.value = Ros_MotionControl_StartMotionMode(mm, &response->message);
     else
         response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
@@ -71,8 +95,9 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
     {
         // update response
 
-        //If it is a MOTION_NOT_READY_ERROR, then the string was already populated in the Ros_MotionControl_StartMotionMode function
-        if (response->result_code.value != MOTION_NOT_READY_ERROR)
+        //Unless a more specific message was already written (ex: MOTION_NOT_READY_ERROR, see
+        //Ros_MotionControl_StartMotionMode, or an unsupported Cartesian configuration)
+        if (response->message.size == 0)
         {
             // map to human readable string
             rosidl_runtime_c__String__assign(&response->message,

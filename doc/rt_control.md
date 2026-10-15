@@ -15,6 +15,7 @@ This control mode minimizes overhead as much as possible by routing the user com
 
 This control mode is activated using the [start_rt_mode](ros_api.md#start_rt_mode) service.
 The user must specify the `control_mode` to indicate whether the increments will be joint offsets (radians) or cartesian TCP offsets (meters / quaternion).
+Cartesian mode is only supported when every control group is a robot (no positioners or base tracks).
 
 If this service is successful, it will return a `result_code` of `Ready (1)`.
 Otherwise, please examine the `result_code` and `message` files in the response for more information.
