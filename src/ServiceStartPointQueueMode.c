@@ -53,7 +53,7 @@ void Ros_ServiceStartPointQueueMode_Trigger(const void* request_msg, void* respo
     response->result_code.value = MOTION_READY;
     rosidl_runtime_c__String__assign(&response->message, "");
     
-    MotionNotReadyCode motion_result_code = Ros_MotionControl_StartMotionMode(MOTION_MODE_POINTQUEUE, &response->message);
+    MotionNotReadyCode motion_result_code = Ros_MotionControl_StartMotionMode(MOTION_MODE_POINTQUEUE, NULL, &response->message);
     if (motion_result_code != MOTION_READY)
     {
         // update response

@@ -36,6 +36,10 @@ static volatile BOOL bRtSessionRunning = FALSE;
 static volatile BOOL bRtTaskRunning = FALSE;
 static volatile BOOL bRtStopRequested = FALSE;
 
+//The order of the joints in the packets. See motoros2_interfaces/msg/JointOrderEnum.
+//Internally, everything is in Motoman order. Set by Ros_RtMotionControl_PrepareSession.
+static UINT16 sessionJointOrder = motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES;
+
 static int sockRtCommandListener = -1;
 
 static LONG prevRtCmdPosition[MAX_GROUPS][MAX_AXES];
@@ -357,9 +361,11 @@ static int Ros_RtMotionControl_WaitForPacket()
     return 0;
 }
 
-//Must be called before the R/T task is created
-void Ros_RtMotionControl_PrepareSession()
+//Must be called before the R/T task is created, and only then, so the settings can't change in
+//the middle of a session
+void Ros_RtMotionControl_PrepareSession(RtSessionSettings const* settings)
 {
+    sessionJointOrder = settings->jointOrder;
     bRtStopRequested = FALSE;
     bRtSessionRunning = TRUE;
     bRtTaskRunning = TRUE;
@@ -484,6 +490,8 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
     int axis, groupNo;
     double pulsesPerUnit;
     double pulses;
+    double motoOrderDelta[MP_GRP_AXES_NUM];
+    double const* delta;
 
     // For each control group, convert radians (or meters) to pulses and prepare moveData
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
@@ -491,7 +499,14 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
         CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
 
         //joints must be in moto-order
-        //
+        if (sessionJointOrder == motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES)
+        {
+            Ros_CtrlGroup_ConvertSequentialJointOrderToMotoJointOrder(ctrlGroup, incomingCommand->delta[groupNo], motoOrderDelta);
+            delta = motoOrderDelta;
+        }
+        else
+            delta = incomingCommand->delta[groupNo];
+
         //Check every axis, not just the first numAxes. Some robots have gaps in their
         //axis layout. (ex: a 4-axis palletizer (SLU--T-) has 4 axes, but T is at index 5)
         for (axis = 0; axis < MP_GRP_AXES_NUM; axis++)
@@ -509,7 +524,7 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
             else
                 pulsesPerUnit = 1.0;
 
-            pulses = incomingCommand->delta[groupNo][axis] * pulsesPerUnit;
+            pulses = delta[axis] * pulsesPerUnit;
 
             //Written so that NaN and infinity also fail this check
             if (!(fabs(pulses) <= ctrlGroup->maxInc.maxIncrement[axis] + RT_MAX_INCREMENT_TOLERANCE_PULSES))
@@ -662,6 +677,19 @@ void Ros_RtMotionControl_OpenSocket()
     }
 }
 
+//Converts joints from moto-order to the order requested for this session
+static void Ros_RtMotionControl_ToSessionJointOrder(CtrlGroup* group, double joints[MP_GRP_AXES_NUM])
+{
+    double motoOrder[MP_GRP_AXES_NUM];
+
+    if (sessionJointOrder != motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES)
+        return;
+
+    memcpy(motoOrder, joints, sizeof(motoOrder));
+    bzero(joints, sizeof(double) * MP_GRP_AXES_NUM); //the conversion doesn't fill the trailing axes
+    Ros_CtrlGroup_ConvertMotoJointOrderToSequentialJointOrder(group, motoOrder, joints);
+}
+
 void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
 {
     long pulsePos_moto[MAX_PULSE_AXES];
@@ -713,6 +741,9 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
             reply->feedbackPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(coord.ex1);
         }
 
+        //after the FK, which needs moto-order
+        Ros_RtMotionControl_ToSessionJointOrder(group, reply->feedbackPositionJoints[groupIndex]);
+
         //================================================================================
         //CMD pos
         //================================================================================
@@ -748,6 +779,9 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
             reply->previousCommandPositionCartesian[groupIndex][TCP_Qw] = qCmd.w;
             reply->previousCommandPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(coord.ex1);
         }
+
+        //after the FK, which needs moto-order
+        Ros_RtMotionControl_ToSessionJointOrder(group, reply->previousCommandPositionJoints[groupIndex]);
     }
 }
 

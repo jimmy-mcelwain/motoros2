@@ -110,12 +110,9 @@ struct RtPacket
 
     UINT32 sequenceId;
 
-    //The order of the joints must be in the order of [S L U R B T E 8].
-    //Please note that for seven axis robots, the 'E' joint is physically
-    //mounted in the middle of the arm. But it must be sent at the end
-    //of the joint array. See JointIndices enum.
-    //
-    //For joint-space, this will be radians of each joint.
+    //For joint-space, this will be radians (or meters for linear axes)
+    //of each joint, in the order selected by the joint_order field of
+    //the start_rt_mode service. See Joints below.
     //
     //For cartesian, this will be meters and quaternion of the TCP.
     //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw Re].
@@ -141,30 +138,20 @@ The current version is `2`.
 
 #### Joints
 
-When the `control_mode` is `JOINT_ANGLES (1)`, the order of the joints in the `delta` array must be in the order of `S L U R B T E 8`.
-Please note that for seven axis robots, the `E` joint is physically mounted in the middle of the arm.
-But it must be sent at the end of the joint array.
-This is different from the order used by the `joint_states` topic, which follows the physical order of the joints.
+When the `control_mode` is `JOINT_ANGLES (1)`, the `delta` array contains the increment for each joint.
+The order of the joints is selected by the `joint_order` field of the [start_rt_mode](ros_api.md#start_rt_mode) service.
+This order is also used for the joint positions in the reply, in both control modes.
+
+| `joint_order` | Order | Seven axes | Four axes (ex: palletizer) |
+| ------------- | ----- | ---------- | -------------------------- |
+| `JOINT_STATES (0)` (default) | Same as the `joint_states` topic (no gaps) | `S L E U R B T` | `S L U T` |
+| `MOTOMAN (1)` | Motoman pulse order | `S L U R B T E` | `S L U - - T` |
+
+MotoROS2 reorders the joints the same way as for `joint_states`, and only for robots with seven axes (`E` moves to third place) and robots with fewer than six (the gaps are removed).
+For all other robots, both settings give the controller's pulse order.
+For most of them that is `S L U R B T`, but not for all: on a robot whose axes the controller numbers in another order (ex: an MH900), both settings give that order, as `joint_states` does.
 
 Linear axes (ex: base tracks) are in meters.
-
-See `JointIndices` enum.
-
-```c
-enum JointIndices
-{
-    Joint_S = 0,    //radians
-    Joint_L,
-    Joint_U,
-    Joint_R,
-    Joint_B,
-    Joint_T,
-    Joint_E,
-    Joint_8,
-
-    MAX_JOINTS
-}
-```
 
 #### Cartesian
 
@@ -238,8 +225,8 @@ struct RtReply
 
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.
-    //The joint ordering will match that of the original command
-    //packet. See JointIndices and CartesianIndices enums.
+    //The joint ordering will match that of the command packet.
+    //See Joints and Cartesian above.
 
     double feedbackPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double feedbackPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];

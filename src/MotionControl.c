@@ -1408,7 +1408,8 @@ void Ros_MotionControl_StopInterpolationTask()
     Ros_MotionControl_InterpolationTaskMode = MOTION_MODE_INACTIVE;
 }
 
-static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode)
+//rtSettings: the settings of the R/T session (R/T modes only)
+static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode, RtSessionSettings const* rtSettings)
 {
     //Release a task which has already ended (ex: an R/T session that timed out)
     if (g_Ros_Controller.tidIncMoveThread != INVALID_TASK && !Ros_MotionControl_IsInterpolationTaskRunning())
@@ -1428,9 +1429,9 @@ static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode)
                 (FUNCPTR)Ros_MotionControl_NonRtIncMoveLoopStart,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
-        else if (Ros_MotionControl_IsRtMode(mode))
+        else if (Ros_MotionControl_IsRtMode(mode) && rtSettings != NULL)
         {
-            Ros_RtMotionControl_PrepareSession();
+            Ros_RtMotionControl_PrepareSession(rtSettings);
             g_Ros_Controller.tidIncMoveThread = mpCreateTask(MP_PRI_IP_CLK_TAKE, MP_STACK_SIZE,
                 (FUNCPTR)Ros_RtMotionControl_RtIncMoveLoopStart,
                 (int)mode, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -1464,8 +1465,10 @@ static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode)
 // NOTE: only attempts to start job if necessary, does not reset errors, alarms.
 //       Does attempt to enable servo power (if not on)
 //       Does attempt to set the cycle mode to AUTO (if not set)
+//
+// rtSettings: the settings of the R/T session (R/T modes), or NULL (other modes)
 //-----------------------------------------------------------------------
-MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_runtime_c__String* responseMessage)
+MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, RtSessionSettings const* rtSettings, rosidl_runtime_c__String* responseMessage)
 {
     int ret;
     MP_STD_RSP_DATA rData;
@@ -1536,7 +1539,7 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         //deleted (ex: agent disconnected), even though the job is still running.
         if (Ros_MotionControl_IsInterpolationTaskRunning())
             Ros_Debug_BroadcastMsg("Already active");
-        else if (Ros_MotionControl_StartInterpolationTask(mode))
+        else if (Ros_MotionControl_StartInterpolationTask(mode, rtSettings))
             Ros_Debug_BroadcastMsg("Already active. Started a new interpolation task (ex: a new R/T session)");
         else
         {
@@ -1726,7 +1729,7 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         //be left running while no motion mode is active. A task which is still running
         //(ex: the mode was active, but the robot was held) is replaced by a new one.
         Ros_MotionControl_StopInterpolationTask();
-        if (!Ros_MotionControl_StartInterpolationTask(mode))
+        if (!Ros_MotionControl_StartInterpolationTask(mode, rtSettings))
         {
             snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: Failed to start the interpolation task",
                 Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR));

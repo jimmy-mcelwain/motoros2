@@ -78,16 +78,23 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
     response->max_sequence_diff_for_rt_msg = g_nodeConfigSettings.max_sequence_diff_for_rt_msg;
 
     MOTION_MODE mm = MOTION_MODE_INACTIVE;
+    RtSessionSettings settings;
+
+    settings.jointOrder = request->joint_order.value;
 
     if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN)
         mm = MOTION_MODE_RT_CARTESIAN;
     else if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__JOINT_ANGLES)
         mm = MOTION_MODE_RT_JOINT;
 
+    if (request->joint_order.value != motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES &&
+        request->joint_order.value != motoros2_interfaces__msg__JointOrderEnum__MOTOMAN)
+        mm = MOTION_MODE_INACTIVE; //invalid selection
+
     if (mm == MOTION_MODE_RT_CARTESIAN && !Ros_ServiceStartRtMode_IsCartesianSupported(&response->message))
         response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
     else if (mm != MOTION_MODE_INACTIVE)
-        response->result_code.value = Ros_MotionControl_StartMotionMode(mm, &response->message);
+        response->result_code.value = Ros_MotionControl_StartMotionMode(mm, &settings, &response->message);
     else
         response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
 

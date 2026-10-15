@@ -53,7 +53,7 @@ void Ros_ServiceStartTrajMode_Trigger(const void* request_msg, void* response_ms
     response->result_code.value = MOTION_READY;
     rosidl_runtime_c__String__assign(&response->message, "");
     
-    MotionNotReadyCode motion_result_code = Ros_MotionControl_StartMotionMode(MOTION_MODE_TRAJECTORY, &response->message);
+    MotionNotReadyCode motion_result_code = Ros_MotionControl_StartMotionMode(MOTION_MODE_TRAJECTORY, NULL, &response->message);
     if (motion_result_code != MOTION_READY)
     {
         // update response
