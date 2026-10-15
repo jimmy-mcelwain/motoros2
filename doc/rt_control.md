@@ -37,6 +37,7 @@ However, that value will increase as additional axes or manipulators are added t
 ### Command Flow
 
 The UDP port (`22000` by default, set by `rt_listener_udp_port_number`) is opened when MotoROS2 starts.
+Packets which arrived while no session was running are discarded when `start_rt_mode` is called.
 The user then sends the first command with the `sequenceId` field set to `0`.
 It is recommended that the first command contains zero increments, as the client does not yet know the position of the robot.
 After that, the user must wait until the robot replies before sending the next increment.
