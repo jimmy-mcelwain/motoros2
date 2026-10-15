@@ -1431,7 +1431,7 @@ static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode)
         {
             Ros_RtMotionControl_PrepareSession();
             g_Ros_Controller.tidIncMoveThread = mpCreateTask(MP_PRI_IP_CLK_TAKE, MP_STACK_SIZE,
-                (FUNCPTR)Ros_RtMotionControl_HyperRobotCommanderX5,
+                (FUNCPTR)Ros_RtMotionControl_RtIncMoveLoopStart,
                 (int)mode, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
         else
@@ -1733,9 +1733,6 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
 
 void Ros_MotionControl_StopTrajMode()
 {
-    if (Ros_MotionControl_IsMotionMode_RealTime())
-        Ros_RtMotionControl_Cleanup();
-
     Ros_MotionControl_AllGroupsInitComplete = FALSE;
     Ros_MotionControl_ActiveMotionMode = MOTION_MODE_INACTIVE;
 

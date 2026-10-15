@@ -14,7 +14,6 @@ void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
 bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
 bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
-void Ros_RtMotionControl_Cleanup();
 void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
 bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
@@ -43,7 +42,8 @@ static LONG howMuchShouldIHaveMoved[MAX_GROUPS][MAX_AXES];
 //truncation would accumulate into a steady drift when streaming small increments.
 static double residualIncrement[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
+//Task to receive increments from the R/T client and pass them to the motion API
+void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK priority task
 {
     MP_EXPOS_DATA moveData;
     int bytes_received;
@@ -164,14 +164,6 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
                 client_addr_status_messages.sin_family = AF_INET;
                 client_addr_status_messages.sin_addr.s_addr = client_addr.sin_addr.s_addr;
                 client_addr_status_messages.sin_port = mpHtons(atoi(g_nodeConfigSettings.rt_status_udp_port_number));
-
-                //if (mpConnect(sockRtStatusSender, (struct sockaddr*)&client_addr_status_messages, sizeof(client_addr_status_messages)) == ERROR)
-                //{
-                //    Ros_Debug_BroadcastMsg("ERROR: Failed to set destination address for RT status");
-                //    mpClose(sockRtStatusSender);
-                //    sockRtStatusSender = -1;
-                //    break;
-                //}
             }
 
             //Check for old or same sequence ID (wraparound safe)
@@ -570,14 +562,6 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
     }
 
     return true;
-}
-
-void Ros_RtMotionControl_Cleanup()
-{
-    //Do not close sockRtCommandListener. Allow it to persist
-    //indefinitely and be reused.
-
-    //Do not delete interpolation task. This is handled in Ros_MotionControl_StopTrajMode.
 }
 
 void Ros_RtMotionControl_OpenSocket()
