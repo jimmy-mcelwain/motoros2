@@ -27,6 +27,12 @@ typedef enum
     MOTION_MODE_RT_CARTESIAN,
 } MOTION_MODE;
 
+//The settings start_rt_mode selects for an R/T session
+typedef struct
+{
+    UINT16 jointOrder;  //motoros2_interfaces/msg/JointOrderEnum
+} RtSessionSettings;
+
 extern Init_Trajectory_Status Ros_MotionControl_InitTrajectory(control_msgs__action__FollowJointTrajectory_SendGoal_Request* pending_ros_goal_request);
 extern void Ros_MotionControl_NonRtIncMoveLoopStart();
 extern void Ros_MotionControl_AddToIncQueueProcess(CtrlGroup* ctrlGroup);
@@ -38,7 +44,7 @@ extern BOOL Ros_MotionControl_IsRosControllingMotion();
 extern int Ros_MotionControl_GetQueueCnt(int groupNo);
 extern BOOL Ros_MotionControl_StopMotion(BOOL bKeepJobRunning);
 extern BOOL Ros_MotionControl_ClearQ_All();
-extern MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_runtime_c__String* responseMessage);
+extern MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, RtSessionSettings const* rtSettings, rosidl_runtime_c__String* responseMessage);
 extern void Ros_MotionControl_StopTrajMode();
 extern void Ros_MotionControl_StopInterpolationTask();
 

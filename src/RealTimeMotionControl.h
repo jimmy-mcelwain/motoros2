@@ -14,7 +14,7 @@
 
 extern void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode);
 extern void Ros_RtMotionControl_OpenSocket();
-extern void Ros_RtMotionControl_PrepareSession();
+extern void Ros_RtMotionControl_PrepareSession(RtSessionSettings const* settings);
 extern BOOL Ros_RtMotionControl_IsSessionRunning();
 extern BOOL Ros_RtMotionControl_StopSession();
 extern void Ros_RtMotionControl_AbortSession();
@@ -74,20 +74,6 @@ typedef enum
 
 typedef enum
 {
-    Joint_S = 0,    //radians
-    Joint_L,
-    Joint_U,
-    Joint_R,
-    Joint_B,
-    Joint_T,
-    Joint_E,
-    Joint_8,
-
-    MAX_JOINTS
-} JointIndices;
-
-typedef enum
-{
     TCP_X = 0,      //meters
     TCP_Y,
     TCP_Z,
@@ -119,12 +105,9 @@ struct RtPacket_
     //Must increment sequentially with each new command packet.
     UINT32 sequenceId;
 
-    //The order of the joints must be in the order of [S L U R B T E 8].
-    //Please note that for seven axis robots, the 'E' joint is phyically
-    //mounted in the middle of the arm. But it must be sent at the end
-    //of the joint array. See JointIndices enum.
-    //
-    //For joint-space, this will be radians of each joint.
+    //For joint-space, this will be radians (or meters for linear axes)
+    //of each joint, in the order selected by the joint_order field of
+    //the start_rt_mode service. See doc/rt_control.md (Joints).
     //
     //For cartesian, this will be meters and quaternion of the TCP.
     //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw Re].
@@ -172,8 +155,8 @@ struct RtReply_
 
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.
-    //The joint ordering will match that of the original command
-    //packet. See JointIndices and CartesianIndices enums.
+    //The joint ordering will match that of the command packet.
+    //See doc/rt_control.md (Joints) and the CartesianIndices enum.
     double feedbackPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double feedbackPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
