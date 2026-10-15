@@ -163,6 +163,20 @@ No rotation is `Qx Qy Qz Qw` = `0 0 0 1`.
 An all-zero quaternion is also accepted as "no rotation", so a zero-filled command can be used as a keep-alive.
 `Re` is the change in elbow angle of seven axis robots. It is ignored for other robots.
 
+To catch client errors (ex: sending an absolute pose instead of an increment), the session is dropped if an increment exceeds:
+
+- 1500 mm/sec of translation
+- 360 deg/sec of rotation
+- 360 deg/sec of elbow angle (seven axis robots)
+
+These are not safety limits.
+The robot controller and the Functional Safety Unit (FSU) still enforce the actual limits.
+MotoROS2 doesn't check joint limits, interference zones or the FSU's range limits: the controller stops the robot with an alarm (ex: `4416` for a joint's pulse limit, `4784` for the FSU robot range limit), and the session ends with `MotionRejected`.
+It doesn't limit acceleration either: the client has to send motion the robot can follow.
+The Cartesian limits don't limit the joint speeds: MotoROS2 only checks those in joint mode.
+A Cartesian command within the limits can still need a joint faster than its maximum speed (ex: a fast rotation of the tool, or an elbow angle step of more than about one degree per 8 ms cycle on a seven axis robot).
+The controller then either executes it anyway (without setting `motionDeviationDetected`), or stops the robot with an alarm (ex: `4414`), and the session ends with `MotionRejected`.
+
 See `CartesianIndices` enum.
 
 ```c

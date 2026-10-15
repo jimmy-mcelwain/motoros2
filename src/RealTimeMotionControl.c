@@ -558,8 +558,9 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
 //being silently normalized. It most likely indicates a bug in the client.
 #define RT_QUATERNION_NORM_TOLERANCE    0.01
 
-//Only meant to reject garbage (ex: NaN). The controller enforces the actual limits.
-#define RT_MAX_ELBOW_INCREMENT_RAD      3.14159265358979
+//No maximum speed is documented for the elbow angle, so the TCP rotation limit is used. Like the
+//TCP limits, this only catches client errors (ex: wrong units). The controller limits the joints.
+#define RT_MAX_ELBOW_SPEED_DEG_PER_MS   0.36
 
 bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
@@ -567,11 +568,15 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
     double* delta;
     double magnitude;
     double norm;
+    double rotation;
     double rx, ry, rz;
     Quaternion q;
 
     // 1500 mm/sec is 1.5 mm/ms
     const double max_speed_mm_per_ms = 1.5;
+
+    // 360 deg/sec is 0.36 deg/ms (the controller's maximum TCP rotation speed)
+    const double max_rotation_deg_per_ms = 0.36;
 
     // For each control group, convert incoming command and prepare moveData
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
@@ -624,6 +629,13 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
             q.w /= norm;
         }
 
+        rotation = 2.0 * atan2(sqrt((q.x * q.x) + (q.y * q.y) + (q.z * q.z)), fabs(q.w)) * DEGREES_PER_RAD;
+        if (rotation > (max_rotation_deg_per_ms * g_Ros_Controller.interpolPeriod))
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The rotation increment for the TCP [%f deg] exceeds the maximum limit of 360 deg/sec", groupNo, rotation);
+            return false;
+        }
+
         QuatConversion_GeomMsgsQuaternion_To_EulerRad(&q, &rx, &ry, &rz);
 
         moveData->grp_pos_info[groupNo].pos[3] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(rx), &residualIncrement[groupNo][3]);
@@ -631,17 +643,19 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
         moveData->grp_pos_info[groupNo].pos[5] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(rz), &residualIncrement[groupNo][5]);
 
         //=========================================================================================
-        //Elbow angle (7-axis robots)
-        if (!(fabs(delta[TCP_Re]) <= RT_MAX_ELBOW_INCREMENT_RAD))
-        {
-            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The elbow angle increment [%f rad] is invalid", groupNo, delta[TCP_Re]);
-            return false;
-        }
-
-        //Other robots have no elbow angle
+        //Elbow angle (7-axis robots). Other robots have no elbow angle.
         moveData->grp_pos_info[groupNo].pos[6] = 0;
         if (g_Ros_Controller.ctrlGroups[groupNo]->numAxes >= 7)
+        {
+            //Written so that NaN and infinity also fail this check
+            if (!(fabs(delta[TCP_Re]) * DEGREES_PER_RAD <= (RT_MAX_ELBOW_SPEED_DEG_PER_MS * g_Ros_Controller.interpolPeriod)))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] The elbow angle increment [%f deg] exceeds the maximum limit of 360 deg/sec", groupNo, delta[TCP_Re] * DEGREES_PER_RAD);
+                return false;
+            }
+
             moveData->grp_pos_info[groupNo].pos[6] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(delta[TCP_Re]), &residualIncrement[groupNo][6]);
+        }
 
         moveData->grp_pos_info[groupNo].pos[7] = 0;
     }
