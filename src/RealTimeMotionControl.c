@@ -475,48 +475,96 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
     return true;
 }
 
+//A quaternion whose length differs from 1 by more than this is rejected, rather than
+//being silently normalized. It most likely indicates a bug in the client.
+#define RT_QUATERNION_NORM_TOLERANCE    0.01
+
+//Only meant to reject garbage (ex: NaN). The controller enforces the actual limits.
+#define RT_MAX_ELBOW_INCREMENT_RAD      3.14159265358979
+
 bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     int groupNo;
+    double* delta;
+    double magnitude;
+    double norm;
+    double rx, ry, rz;
+    Quaternion q;
+
+    // 1500 mm/sec is 1.5 mm/ms
+    const double max_speed_mm_per_ms = 1.5;
 
     // For each control group, convert incoming command and prepare moveData
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
+        delta = incomingCommand->delta[groupNo];
+
         moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
 
-        moveData->grp_pos_info[groupNo].pos[TCP_X] = METERS_TO_MICROMETERS(incomingCommand->delta[groupNo][TCP_X]);
-        moveData->grp_pos_info[groupNo].pos[TCP_Y] = METERS_TO_MICROMETERS(incomingCommand->delta[groupNo][TCP_Y]);
-        moveData->grp_pos_info[groupNo].pos[TCP_Z] = METERS_TO_MICROMETERS(incomingCommand->delta[groupNo][TCP_Z]);
+        //=========================================================================================
+        //Translation
+        magnitude = METERS_TO_MILLIMETERS(sqrt(pow(delta[TCP_X], 2) + //x^2
+                                               pow(delta[TCP_Y], 2) + //y^2
+                                               pow(delta[TCP_Z], 2))); //z^2
 
-        Quaternion q;
-        q.x = incomingCommand->delta[groupNo][TCP_Qx];
-        q.y = incomingCommand->delta[groupNo][TCP_Qy];
-        q.z = incomingCommand->delta[groupNo][TCP_Qz];
-        q.w = incomingCommand->delta[groupNo][TCP_Qw];
-
-        LONG rx_deg = 0, ry_deg = 0, rz_deg = 0;
-        QuatConversion_GeomMsgsQuaternion_To_MpCoordOrient(&q, &rx_deg, &ry_deg, &rz_deg);
-
-        moveData->grp_pos_info[groupNo].pos[3] = rx_deg;
-        moveData->grp_pos_info[groupNo].pos[4] = ry_deg;
-        moveData->grp_pos_info[groupNo].pos[5] = rz_deg;
-
-        moveData->grp_pos_info[groupNo].pos[6] = RAD_TO_DEG_0001(incomingCommand->delta[groupNo][TCP_Re]);
-
-        moveData->grp_pos_info[groupNo].pos[7] = 0;
-
-        double magnitude = METERS_TO_MILLIMETERS(sqrt(pow(incomingCommand->delta[groupNo][TCP_X], 2) + //x^2
-                             pow(incomingCommand->delta[groupNo][TCP_Y], 2) + //y^2
-                             pow(incomingCommand->delta[groupNo][TCP_Z], 2))); //z^2
-
-        // Assuming 'elapsed_ms' is your variable for time in milliseconds.
-        const double max_speed_mm_per_ms = 1.5; // 1500 mm/sec is 1.5 mm/ms
-
-        if (magnitude > (max_speed_mm_per_ms * g_Ros_Controller.interpolPeriod))
+        //Written so that NaN and infinity also fail this check
+        if (!(magnitude <= (max_speed_mm_per_ms * g_Ros_Controller.interpolPeriod)))
         {
-            Ros_Debug_BroadcastMsg("ERROR: The increment for the TCP exceeds the maximum limit of 1500 mm/sec");
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The increment for the TCP [%f mm] exceeds the maximum limit of 1500 mm/sec", groupNo, magnitude);
             return false;
         }
+
+        moveData->grp_pos_info[groupNo].pos[TCP_X] = Ros_RtMotionControl_TakeWholeUnits(METERS_TO_MICROMETERS(delta[TCP_X]), &residualIncrement[groupNo][TCP_X]);
+        moveData->grp_pos_info[groupNo].pos[TCP_Y] = Ros_RtMotionControl_TakeWholeUnits(METERS_TO_MICROMETERS(delta[TCP_Y]), &residualIncrement[groupNo][TCP_Y]);
+        moveData->grp_pos_info[groupNo].pos[TCP_Z] = Ros_RtMotionControl_TakeWholeUnits(METERS_TO_MICROMETERS(delta[TCP_Z]), &residualIncrement[groupNo][TCP_Z]);
+
+        //=========================================================================================
+        //Rotation
+        q.x = delta[TCP_Qx];
+        q.y = delta[TCP_Qy];
+        q.z = delta[TCP_Qz];
+        q.w = delta[TCP_Qw];
+
+        norm = sqrt((q.x * q.x) + (q.y * q.y) + (q.z * q.z) + (q.w * q.w));
+        if (norm == 0.0)
+        {
+            //An all-zero packet is treated as "no rotation", so a zero-filled
+            //packet can be used as a keep-alive
+            q.w = 1.0;
+        }
+        else if (!(fabs(norm - 1.0) <= RT_QUATERNION_NORM_TOLERANCE)) //NaN also fails this check
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The rotation must be a unit quaternion (length is [%f])", groupNo, norm);
+            return false;
+        }
+        else
+        {
+            q.x /= norm;
+            q.y /= norm;
+            q.z /= norm;
+            q.w /= norm;
+        }
+
+        QuatConversion_GeomMsgsQuaternion_To_EulerRad(&q, &rx, &ry, &rz);
+
+        moveData->grp_pos_info[groupNo].pos[3] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(rx), &residualIncrement[groupNo][3]);
+        moveData->grp_pos_info[groupNo].pos[4] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(ry), &residualIncrement[groupNo][4]);
+        moveData->grp_pos_info[groupNo].pos[5] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(rz), &residualIncrement[groupNo][5]);
+
+        //=========================================================================================
+        //Elbow angle (7-axis robots)
+        if (!(fabs(delta[TCP_Re]) <= RT_MAX_ELBOW_INCREMENT_RAD))
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The elbow angle increment [%f rad] is invalid", groupNo, delta[TCP_Re]);
+            return false;
+        }
+
+        //Other robots have no elbow angle
+        moveData->grp_pos_info[groupNo].pos[6] = 0;
+        if (g_Ros_Controller.ctrlGroups[groupNo]->numAxes >= 7)
+            moveData->grp_pos_info[groupNo].pos[6] = Ros_RtMotionControl_TakeWholeUnits(RAD_TO_DEG_0001(delta[TCP_Re]), &residualIncrement[groupNo][6]);
+
+        moveData->grp_pos_info[groupNo].pos[7] = 0;
     }
 
     return true;
