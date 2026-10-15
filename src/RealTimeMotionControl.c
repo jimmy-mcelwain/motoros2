@@ -101,9 +101,6 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     Ros_Debug_BroadcastMsg("Starting RT session");
 
-    Ros_Debug_BroadcastMsg("Flushing stale packets from socket buffer...");
-    Ros_RtMotionControl_PurgeBufferedPackets();
-
     robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
     //=========================================================================================
@@ -367,6 +364,12 @@ static int Ros_RtMotionControl_WaitForPacket()
 //the middle of a session
 void Ros_RtMotionControl_PrepareSession(RtSessionSettings const* settings)
 {
+    //Discard stale packets here, before start_rt_mode responds, rather than in the R/T task.
+    //Otherwise a client which sends its first command as soon as it gets the response could
+    //have it discarded, depending on how soon the task gets to run.
+    Ros_Debug_BroadcastMsg("Flushing stale packets from socket buffer...");
+    Ros_RtMotionControl_PurgeBufferedPackets();
+
     sessionJointOrder = settings->jointOrder;
     bRtStopRequested = FALSE;
     bRtSessionRunning = TRUE;
@@ -902,11 +905,12 @@ void Ros_RtMotionControl_PurgeBufferedPackets()
         tv.tv_usec = 0;
         tv.tv_sec = 0;
 
-        if (mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, &tv) > 0)
-        {
-            mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len);
-        }
-        else
+        if (mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, &tv) <= 0)
+            break;
+
+        //Stop on an error, rather than finding the same packet waiting forever
+        client_addr_len = sizeof(client_addr);
+        if (mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len) < 0)
             break;
     }
 }
