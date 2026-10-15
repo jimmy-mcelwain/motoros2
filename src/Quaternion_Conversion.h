@@ -95,4 +95,11 @@ extern void QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(LONG rx_deg, LONG
  */
 extern void QuatConversion_GeomMsgsQuaternion_To_MpCoordOrient(const Quaternion* const q, LONG* rx_deg, LONG* ry_deg, LONG* rz_deg);
 
+/**
+ * Convert the quaternion q to its Euler angle (ZYX-intrinsic) representation.
+ *
+ * NOTE: Euler angles will be in radians, without any truncation.
+ */
+extern void QuatConversion_GeomMsgsQuaternion_To_EulerRad(const Quaternion* const q, double* rx, double* ry, double* rz);
+
 #endif  // MOTOROS2_QUATERNION_CONVERSION_H
