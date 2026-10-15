@@ -80,12 +80,12 @@ struct RtPacket_
     int version;
 
     //The packet type must match the control_mode which was specified
-    //in when invoking the start_rt_mode service.
+    //when invoking the start_rt_mode service.
     PacketType packetType;
 
     //Must increment sequentially with each new command packet.
     UINT32 sequenceId;
-    
+
     //The order of the joints must be in the order of [S L U R B T E 8].
     //Please note that for seven axis robots, the 'E' joint is phyically
     //mounted in the middle of the arm. But it must be sent at the end
@@ -97,14 +97,13 @@ struct RtPacket_
     //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw Re].
     //See CartesianIndices enum.
     double delta[MAX_GROUPS][MP_GRP_AXES_NUM];
-    
-    //Set tool that will be used by motion API (ie: passed by us to mpExRcsIncrementMove(..))
-    //NOTE: this will change the 'motion tool' ONLY for those increments which
-    //      haven't yet been added to the increment queue. See also the ROS 2
-    //      'select_tool' service definition file in motoros2_interfaces.
+
+    //The tool of each control group. Cartesian commands, and the Cartesian
+    //poses in the reply, are for this tool's TCP. The select_motion_tool
+    //service doesn't affect R/T sessions.
     int toolIndex[MAX_GROUPS]; //TOOL 0 - 63
 
-    //Reserved for future expansion
+    //Reserved for future expansion. Set it to 0: a later version may use it.
     char reserved[64];
 
 } PACKED;
