@@ -1487,7 +1487,9 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         //deleted (ex: agent disconnected), even though the job is still running.
         if (!Ros_MotionControl_IsInterpolationTaskRunning() && !Ros_MotionControl_StartInterpolationTask(mode))
         {
-            rosidl_runtime_c__String__assign(responseMessage, "Failed to start the interpolation task");
+            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: Failed to start the interpolation task",
+                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR));
+            rosidl_runtime_c__String__assign(responseMessage, output);
             return MOTION_NOT_READY_ERROR;
         }
 
@@ -1646,9 +1648,6 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         }
     }
 
-    if (!Ros_MotionControl_StartInterpolationTask(mode))
-        return MOTION_NOT_READY_ERROR;
-
     // have to initialize the prevPulsePos that will be used when interpolating the traj
     for(grpNo = 0; grpNo < g_Ros_Controller.numGroup; ++grpNo)
     {
@@ -1705,6 +1704,18 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
 
     if (motion_readiness_code == MOTION_READY)
     {
+        //Only start the task once everything else has succeeded. Otherwise it would
+        //be left running while no motion mode is active. A task which is still running
+        //(ex: the mode was active, but the robot was held) is replaced by a new one.
+        Ros_MotionControl_StopInterpolationTask();
+        if (!Ros_MotionControl_StartInterpolationTask(mode))
+        {
+            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: Failed to start the interpolation task",
+                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR));
+            rosidl_runtime_c__String__assign(responseMessage, output);
+            return MOTION_NOT_READY_ERROR;
+        }
+
         //set an indicator of which motion mode is now active
         Ros_MotionControl_ActiveMotionMode = mode;
         Ros_Debug_BroadcastMsg("Ros_MotionControl_ActiveMotionMode = %d", Ros_MotionControl_ActiveMotionMode);
