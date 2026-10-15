@@ -14,6 +14,9 @@
 #define MOTION_START_CHECK_PERIOD           50  // in millisecond
 #define MOTION_START_ERROR_MESSAGE_LENGTH  256
 #define MOTION_STOP_TIMEOUT                 20
+//Long enough for the task to finish stopping the motion, which includes clearing the queues, or
+//to finish retrying an increment while energy saving mode ends (up to MOTION_START_TIMEOUT)
+#define NON_RT_STOP_WAIT_TIMEOUT_MS         6000
 
 typedef enum
 {
@@ -37,6 +40,7 @@ extern BOOL Ros_MotionControl_StopMotion(BOOL bKeepJobRunning);
 extern BOOL Ros_MotionControl_ClearQ_All();
 extern MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_runtime_c__String* responseMessage);
 extern void Ros_MotionControl_StopTrajMode();
+extern void Ros_MotionControl_StopInterpolationTask();
 
 extern BOOL Ros_MotionControl_IsMotionMode_Trajectory();
 extern BOOL Ros_MotionControl_IsMotionMode_PointQueue();

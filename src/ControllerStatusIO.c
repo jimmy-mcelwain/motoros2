@@ -230,11 +230,7 @@ void Ros_Controller_Cleanup()
         }
     }
 
-    if (g_Ros_Controller.tidIncMoveThread != INVALID_TASK)
-    {
-        mpDeleteTask(g_Ros_Controller.tidIncMoveThread);
-        g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
-    }
+    Ros_MotionControl_StopInterpolationTask();
 
     Ros_Debug_BroadcastMsg("Cleanup publisher robot status");
     ret = rcl_publisher_fini(&g_publishers_RobotStatus.robotStatus, &g_microRosNodeInfo.node);

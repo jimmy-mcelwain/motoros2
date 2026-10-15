@@ -35,7 +35,7 @@ Each subsequent command must increment the `sequenceId`. Additionally, each subs
 This will occur at the rate of the `period` from the [start_rt_mode](ros_api.md#start_rt_mode) service.
 
 If a command is not received with 5 seconds (default), then the session times out and is dropped.
-At that point, the server must be reactivated by calling `stop_traj_mode` and `start_rt_mode`.
+At that point, a new session must be started by calling `start_rt_mode` again.
 A "keep-alive" can be used by sending a command with zero increments.
 
 Additionally, if the client does not receive a reply packet within this amount of time, then it should be assumed that the session is dead.

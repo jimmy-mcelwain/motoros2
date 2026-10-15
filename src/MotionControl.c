@@ -666,6 +666,10 @@ UINT16 Ros_MotionControl_ProcessQueuedTrajectoryPoint(motoros2_interfaces__srv__
     return motoros2_interfaces__msg__QueueResultEnum__SUCCESS;
 }
 
+//The non-R/T task exits when this is set. See Ros_MotionControl_StopInterpolationTask.
+static volatile BOOL bNonRtStopRequested = FALSE;
+static volatile BOOL bNonRtTaskRunning = FALSE;
+
 //-------------------------------------------------------------------
 // Task to move the robot at each interpolation increment
 //-------------------------------------------------------------------
@@ -735,6 +739,11 @@ void Ros_MotionControl_NonRtIncMoveLoopStart() //<-- IP_CLK priority task
     FOREVER
     {
         mpClkAnnounce(MP_INTERPOLATION_CLK);
+
+        //Only exit here, between cycles. Not while this task is stopping the motion itself
+        //(see Ros_MotionControl_StopMotion below), which would leave the HOLD on.
+        if (bNonRtStopRequested)
+            break;
 
         if (Ros_Controller_IsMotionReady()
             && (Ros_MotionControl_HasDataInQueue() || hasUnprocessedData)
@@ -1043,6 +1052,11 @@ void Ros_MotionControl_NonRtIncMoveLoopStart() //<-- IP_CLK priority task
             }
         }
     }
+
+    Ros_Debug_BroadcastMsg("IncMoveTask exiting");
+    bNonRtTaskRunning = FALSE;
+
+    mpSuspendSelf;
 }
 
 //-------------------------------------------------------------------
@@ -1328,8 +1342,77 @@ static STATUS Ros_Controller_DisableEcoMode()
         return NG;
 }
 
-BOOL StartInterpolationTask(MOTION_MODE mode)
+static BOOL Ros_MotionControl_IsRtMode(MOTION_MODE mode)
 {
+    return (mode == MOTION_MODE_RT_JOINT || mode == MOTION_MODE_RT_CARTESIAN);
+}
+
+//Mode the current tidIncMoveThread was created for
+static MOTION_MODE Ros_MotionControl_InterpolationTaskMode = MOTION_MODE_INACTIVE;
+
+static BOOL Ros_MotionControl_IsInterpolationTaskRunning()
+{
+    if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
+        return FALSE;
+
+    //The R/T task ends on its own (timeout, error, etc.)
+    if (Ros_MotionControl_IsRtMode(Ros_MotionControl_InterpolationTaskMode))
+        return Ros_RtMotionControl_IsSessionRunning();
+
+    return bNonRtTaskRunning;
+}
+
+//Asks the non-R/T task to exit and waits for it to do so.
+//Returns FALSE if the task did not exit in time.
+static BOOL Ros_MotionControl_StopNonRtTask()
+{
+    int waited_ms;
+
+    bNonRtStopRequested = TRUE;
+
+    for (waited_ms = 0; bNonRtTaskRunning && waited_ms < NON_RT_STOP_WAIT_TIMEOUT_MS; waited_ms += 10)
+        Ros_Sleep(10);
+
+    return !bNonRtTaskRunning;
+}
+
+void Ros_MotionControl_StopInterpolationTask()
+{
+    if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
+        return;
+
+    //Let the task finish on its own rather than deleting it wherever it is: the R/T task may be
+    //blocked on the socket, and the non-R/T task may be stopping the motion (deleting it then
+    //leaves the HOLD on, and MotoROS2 unable to move the robot). Once finished, it suspends
+    //itself, and must still be deleted: MP_PRI_IP_CLK_TAKE takes exclusive use of the
+    //interpolation clock, and mpDeleteTask is what releases it. Otherwise the next mpCreateTask
+    //at that priority fails.
+    if (Ros_MotionControl_IsRtMode(Ros_MotionControl_InterpolationTaskMode))
+    {
+        if (!Ros_RtMotionControl_StopSession())
+        {
+            Ros_Debug_BroadcastMsg("R/T session did not stop in time. Deleting task.");
+            Ros_RtMotionControl_AbortSession();
+        }
+    }
+    else if (!Ros_MotionControl_StopNonRtTask())
+    {
+        Ros_Debug_BroadcastMsg("IncMoveTask did not stop in time. Deleting task.");
+        bNonRtTaskRunning = FALSE;
+    }
+
+    mpDeleteTask(g_Ros_Controller.tidIncMoveThread);
+
+    g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
+    Ros_MotionControl_InterpolationTaskMode = MOTION_MODE_INACTIVE;
+}
+
+static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode)
+{
+    //Release a task which has already ended (ex: an R/T session that timed out)
+    if (g_Ros_Controller.tidIncMoveThread != INVALID_TASK && !Ros_MotionControl_IsInterpolationTaskRunning())
+        Ros_MotionControl_StopInterpolationTask();
+
     //==================================
     // If not started, start the IncMoveTask (there should be only one instance of this thread)
     if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
@@ -1338,12 +1421,15 @@ BOOL StartInterpolationTask(MOTION_MODE mode)
 
         if (mode == MOTION_MODE_TRAJECTORY || mode == MOTION_MODE_POINTQUEUE)
         {
+            bNonRtStopRequested = FALSE;
+            bNonRtTaskRunning = TRUE;
             g_Ros_Controller.tidIncMoveThread = mpCreateTask(MP_PRI_IP_CLK_TAKE, MP_STACK_SIZE,
                 (FUNCPTR)Ros_MotionControl_NonRtIncMoveLoopStart,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
-        else if (mode == MOTION_MODE_RT_JOINT || mode == MOTION_MODE_RT_CARTESIAN)
+        else if (Ros_MotionControl_IsRtMode(mode))
         {
+            Ros_RtMotionControl_PrepareSession();
             g_Ros_Controller.tidIncMoveThread = mpCreateTask(MP_PRI_IP_CLK_TAKE, MP_STACK_SIZE,
                 (FUNCPTR)Ros_RtMotionControl_HyperRobotCommanderX5,
                 (int)mode, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -1355,12 +1441,15 @@ BOOL StartInterpolationTask(MOTION_MODE mode)
         {
             Ros_Debug_BroadcastMsg("Failed to create task for incremental-motion.  Check robot parameters.");
             g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
+            Ros_RtMotionControl_AbortSession();
+            bNonRtTaskRunning = FALSE;
             Ros_Controller_SetIOState(IO_FEEDBACK_FAILURE, TRUE);
             mpSetAlarm(ALARM_TASK_CREATE_FAIL, APPLICATION_NAME " FAILED TO CREATE TASK", SUBCODE_INCREMENTAL_MOTION);
 
             return FALSE;
         }
 
+        Ros_MotionControl_InterpolationTaskMode = mode;
         return TRUE;
     }
 
@@ -1397,6 +1486,14 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
     // Check if already in the proper mode
     if (Ros_Controller_IsMotionReady() && Ros_MotionControl_ActiveMotionMode != MOTION_MODE_INACTIVE)
     {
+        //The interpolation task may have ended (ex: R/T session timed out) or been
+        //deleted (ex: agent disconnected), even though the job is still running.
+        if (!Ros_MotionControl_IsInterpolationTaskRunning() && !Ros_MotionControl_StartInterpolationTask(mode))
+        {
+            rosidl_runtime_c__String__assign(responseMessage, "Failed to start the interpolation task");
+            return MOTION_NOT_READY_ERROR;
+        }
+
         Ros_Debug_BroadcastMsg("Already active");
         return MOTION_READY;
     }
@@ -1552,7 +1649,7 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         }
     }
 
-    if (!StartInterpolationTask(mode))
+    if (!Ros_MotionControl_StartInterpolationTask(mode))
         return MOTION_NOT_READY_ERROR;
 
     // have to initialize the prevPulsePos that will be used when interpolating the traj
@@ -1641,11 +1738,7 @@ void Ros_MotionControl_StopTrajMode()
     ioWriteData.ulValue = 0;
     mpWriteIO(&ioWriteData, 1);
 
-    if (g_Ros_Controller.tidIncMoveThread != INVALID_TASK)
-    {
-        mpDeleteTask(g_Ros_Controller.tidIncMoveThread);
-        g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
-    }
+    Ros_MotionControl_StopInterpolationTask();
 }
 
 BOOL Ros_MotionControl_IsMotionMode_Trajectory()
@@ -1662,8 +1755,7 @@ BOOL Ros_MotionControl_IsMotionMode_PointQueue()
 
 BOOL Ros_MotionControl_IsMotionMode_RealTime()
 {
-    return (Ros_MotionControl_ActiveMotionMode == MOTION_MODE_RT_JOINT || 
-            Ros_MotionControl_ActiveMotionMode == MOTION_MODE_RT_CARTESIAN);
+    return Ros_MotionControl_IsRtMode(Ros_MotionControl_ActiveMotionMode);
 }
 
 void Ros_MotionControl_ValidateMotionModeIsOk()

@@ -19,6 +19,15 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
 bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
 void Ros_RtMotionControl_SendRobotStatus();
+static int Ros_RtMotionControl_WaitForPacket();
+
+//How often the R/T task checks for a stop request while waiting for a command packet
+#define RT_STOP_POLL_PERIOD_MS      100
+//How long to wait for the R/T task to exit on its own before it gets deleted
+#define RT_STOP_WAIT_TIMEOUT_MS     1000
+
+static volatile BOOL bRtSessionRunning = FALSE;
+static volatile BOOL bRtStopRequested = FALSE;
 
 static int sockRtCommandListener = -1;
 static int sockRtStatusSender = -1;
@@ -44,10 +53,6 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
 
     UINT32 previousSequenceId = 0;
 
-    struct fd_set fds;
-    struct timeval tv;
-    struct timeval* timeout;
-
     bool motionDeviationDetected;
 
     bool packetTypeOK;
@@ -62,7 +67,11 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
     else
     {
         if (!Ros_RtMotionControl_InitCartesian(&moveData))
-            return; //abort rt session
+        {
+            bRtSessionRunning = FALSE;
+            mpSuspendSelf;
+            return;
+        }
     }
 
     Ros_Debug_BroadcastMsg("Starting RT session");
@@ -78,18 +87,7 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
     //=========================================================================================
     while (TRUE)
     {
-        FD_ZERO(&fds);
-        FD_SET(sockRtCommandListener, &fds);
-
-        tv.tv_usec = (g_nodeConfigSettings.timeout_for_rt_msg % 1000) * 1000;
-        tv.tv_sec = g_nodeConfigSettings.timeout_for_rt_msg / 1000;
-
-        if (g_nodeConfigSettings.timeout_for_rt_msg != -1)
-            timeout = &tv;
-        else
-            timeout = NULL;
-
-        if (mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, timeout) > 0)
+        if (Ros_RtMotionControl_WaitForPacket() > 0)
         {
             bzero(&incomingCommand, sizeof(incomingCommand));
             bytes_received = mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len);
@@ -230,7 +228,10 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
         }
         else
         {
-            Ros_Debug_BroadcastMsg("No packets received for %d milliseconds", g_nodeConfigSettings.timeout_for_rt_msg);
+            if (bRtStopRequested)
+                Ros_Debug_BroadcastMsg("Stop requested");
+            else
+                Ros_Debug_BroadcastMsg("No packets received for %d milliseconds", g_nodeConfigSettings.timeout_for_rt_msg);
             break;
         }
     }
@@ -238,6 +239,82 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
     mpDeleteTask(tidRobotStatus);
 
     Ros_Debug_BroadcastMsg("Ending Rt Session");
+
+    //Ros_RtMotionControl_StopSession waits for this
+    bRtSessionRunning = FALSE;
+    mpSuspendSelf;
+}
+
+//Waits for a command packet to arrive, while periodically checking whether
+//the session has been asked to stop. This allows the task to exit on its own,
+//instead of being deleted while it is blocked on the socket.
+//
+//Returns >0 if a packet is available, 0 on timeout or stop request, and <0 on error.
+static int Ros_RtMotionControl_WaitForPacket()
+{
+    struct fd_set fds;
+    struct timeval tv;
+    int remaining_ms = g_nodeConfigSettings.timeout_for_rt_msg; //-1 never times out
+    int slice_ms;
+    int ret;
+
+    while (!bRtStopRequested)
+    {
+        slice_ms = RT_STOP_POLL_PERIOD_MS;
+        if (remaining_ms != -1 && remaining_ms < slice_ms)
+            slice_ms = remaining_ms;
+
+        FD_ZERO(&fds);
+        FD_SET(sockRtCommandListener, &fds);
+
+        tv.tv_usec = (slice_ms % 1000) * 1000;
+        tv.tv_sec = slice_ms / 1000;
+
+        ret = mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, &tv);
+        if (ret != 0)
+            return ret;
+
+        if (remaining_ms != -1)
+        {
+            remaining_ms -= slice_ms;
+            if (remaining_ms <= 0)
+                return 0;
+        }
+    }
+
+    return 0;
+}
+
+//Must be called before the R/T task is created
+void Ros_RtMotionControl_PrepareSession()
+{
+    bRtStopRequested = FALSE;
+    bRtSessionRunning = TRUE;
+}
+
+BOOL Ros_RtMotionControl_IsSessionRunning()
+{
+    return bRtSessionRunning;
+}
+
+//Asks the R/T task to exit and waits for it to do so.
+//Returns FALSE if the task did not exit in time.
+BOOL Ros_RtMotionControl_StopSession()
+{
+    int waited_ms;
+
+    bRtStopRequested = TRUE;
+
+    for (waited_ms = 0; bRtSessionRunning && waited_ms < RT_STOP_WAIT_TIMEOUT_MS; waited_ms += 10)
+        Ros_Sleep(10);
+
+    return !bRtSessionRunning;
+}
+
+//Called after the R/T task has been forcibly deleted, or could not be created
+void Ros_RtMotionControl_AbortSession()
+{
+    bRtSessionRunning = FALSE;
 }
 
 
