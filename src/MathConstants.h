@@ -16,11 +16,11 @@
 #define DEGREES_PER_RAD (57.295779513082)
 
 // macro
-#define METERS_TO_MILLIMETERS(x)    (x * 1000)
-#define MICROMETERS_TO_METERS(x)    (x * 0.000001)
-#define METERS_TO_MICROMETERS(x)    (x * 1000000)
-#define RAD_TO_DEG_0001(x)          (x * DEGREES_PER_RAD * 10000)
-#define DEG_0001_TO_RAD(x)          ((x / 10000) * RAD_PER_DEGREE)
+#define METERS_TO_MILLIMETERS(x)    ((x) * 1000)
+#define MICROMETERS_TO_METERS(x)    ((x) * 0.000001)
+#define METERS_TO_MICROMETERS(x)    ((x) * 1000000)
+#define RAD_TO_DEG_0001(x)          ((x) * DEGREES_PER_RAD * 10000)
+#define DEG_0001_TO_RAD(x)          ((x) / 10000.0 * RAD_PER_DEGREE)
 
 // used for comparing floating point values
 #define EPSILON_TOLERANCE_DOUBLE (0.001)
