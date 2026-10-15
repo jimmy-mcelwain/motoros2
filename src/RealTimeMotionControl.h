@@ -48,6 +48,18 @@ typedef enum
 
 typedef enum
 {
+    RobotStatus_DrivesPowered   = (1 << 0),     //Servo power is on, and not in energy saving mode
+    RobotStatus_EStopped        = (1 << 1),     //Pendant, external or controller E-stop
+    RobotStatus_Hold            = (1 << 2),
+    RobotStatus_Alarm           = (1 << 3),     //Major, minor, system or user alarm
+    RobotStatus_Error           = (1 << 4),
+    RobotStatus_PlayMode        = (1 << 5),     //Pendant is in PLAY or REMOTE mode (not TEACH)
+    RobotStatus_PflActive       = (1 << 6),     //PFL has stopped the robot, or is escaping/avoiding (HC robots only)
+    RobotStatus_RemoteMode      = (1 << 7),     //Pendant is in REMOTE mode
+} RobotStatusBits;
+
+typedef enum
+{
     Group_1 = 0,
     Group_2,
     Group_3,
@@ -153,6 +165,11 @@ struct RtReply_
     //Additional information about the endReason. See EndReason enum.
     int endDetail;
 
+    //Bitfield of RobotStatusBits. This is read right after the previous reply
+    //was sent, so it is one cycle old. (It is current in a SessionEnded reply.)
+    //Any change which prevents motion will also end the session.
+    UINT32 robotStatus;
+
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.
     //The joint ordering will match that of the original command
@@ -178,26 +195,6 @@ struct RtReply_
 } PACKED;
 typedef struct RtReply_ RtReply;
 
-
-//##########################################################################
-//                  !All data is little-endian!
-//##########################################################################
-
-//Essentially a clone of the /robot_status topic. But decoupled
-//from the industrial_msgs/RobotStatus type.
-#define VERSION_OF_ROBOT_STATE_PACKET   1
-struct RobotState_
-{
-    int version;
-
-    BOOL drives_powered;
-    BOOL e_stopped;
-    BOOL play_mode;
-    BOOL motion_possible;
-    BOOL error;
-    int error_code;
-} PACKED;
-typedef struct RobotState_ RobotState;
 
 //When checking for interference from the FSU speed limit, there will
 //likely be some small rounding errors. So, the deviation must exceed

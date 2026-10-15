@@ -129,6 +129,7 @@ extern BOOL Ros_Controller_IsContinuousCycle();
 extern BOOL Ros_Controller_IsMotionReady();
 extern BOOL Ros_Controller_IsInMotion();
 extern BOOL Ros_Controller_IsPflActive();
+extern BOOL Ros_Controller_IsPflActiveInStatus(USHORT const ioStatus[IO_ROBOTSTATUS_MAX]);
 extern BOOL Ros_Controller_IsMpIncMoveErrorActive();
 extern BOOL Ros_Controller_IsAnyFaultActive();
 extern BOOL Ros_Controller_MasterTaskIsJobName(const char* const jobName);

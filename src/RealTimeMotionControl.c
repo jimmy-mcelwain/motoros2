@@ -10,6 +10,11 @@
 
 #include "MotoROS.h"
 
+//The sizes of the packets, as documented in doc/rt_control.md (Wire format). Clients rely on them.
+//(Fails to compile otherwise: an array can't have a negative size.)
+typedef char RtPacketSizeIsAsDocumented[(sizeof(RtPacket) == 620) ? 1 : -1];
+typedef char RtReplySizeIsAsDocumented[(sizeof(RtReply) == 2069) ? 1 : -1];
+
 void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
 bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
 bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
@@ -17,7 +22,7 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
 void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
 bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
-void Ros_RtMotionControl_SendRobotStatus();
+static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static int Ros_RtMotionControl_WaitForPacket();
 
 //How often the R/T task checks for a stop request while waiting for a command packet
@@ -29,10 +34,6 @@ static volatile BOOL bRtSessionRunning = FALSE;
 static volatile BOOL bRtStopRequested = FALSE;
 
 static int sockRtCommandListener = -1;
-static int sockRtStatusSender = -1;
-static int tidRobotStatus = -1;
-
-static struct sockaddr_in client_addr_status_messages;
 
 static LONG prevRtCmdPosition[MAX_GROUPS][MAX_AXES];
 static LONG howMuchShouldIHaveMoved[MAX_GROUPS][MAX_AXES];
@@ -67,6 +68,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     bool packetTypeOK;
 
+    UINT32 robotStatus;
+
     //=========================================================================================
 
     bzero(prevRtCmdPosition, MAX_GROUPS * MAX_AXES * sizeof(LONG));
@@ -90,10 +93,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     Ros_Debug_BroadcastMsg("Flushing stale packets from socket buffer...");
     Ros_RtMotionControl_PurgeBufferedPackets();
 
-    //Spin up a separate normal-priorty thread to send out the robot status info
-    tidRobotStatus = mpCreateTask(MP_PRI_TIME_NORMAL, MP_STACK_SIZE,
-        (FUNCPTR)Ros_RtMotionControl_SendRobotStatus,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
     //=========================================================================================
     while (TRUE)
@@ -178,17 +178,6 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             //reopens its socket, so keep the latest one for the final reply.
             previous_client_addr = client_addr;
 
-            if (bFirstRecv)
-            {
-                //flag is cleared down below
-
-                //setup destination for status messages
-                memset(&client_addr_status_messages, 0, sizeof(client_addr_status_messages));
-                client_addr_status_messages.sin_family = AF_INET;
-                client_addr_status_messages.sin_addr.s_addr = client_addr.sin_addr.s_addr;
-                client_addr_status_messages.sin_port = mpHtons(atoi(g_nodeConfigSettings.rt_status_udp_port_number));
-            }
-
             //Check for old or same sequence ID (wraparound safe)
             if (((int32_t)(incomingCommand.sequenceId - previousSequenceId) <= 0) && !bFirstRecv)
             {
@@ -248,10 +237,15 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             Ros_RtMotionControl_PopulateReplyMessage(mode, &incomingCommand, &outgoingReply);
             outgoingReply.replyType = ReplyType_Feedback;
             outgoingReply.endReason = EndReason_None;
+            outgoingReply.robotStatus = robotStatus;
             outgoingReply.motionDeviationDetected = motionDeviationDetected;
 
             Ros_RtMotionControl_PurgeBufferedPackets(); //in case user sent multiple commands while this was sleeping
             mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
+
+            //Read the status for the next reply now, while the client is computing its next
+            //command, so it doesn't delay the reply.
+            robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
             //track how big the increment SHOULD have been
             //we'll compare next cycle to see what actually happened
@@ -286,8 +280,6 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         }
     }
 
-    mpDeleteTask(tidRobotStatus);
-
     //=========================================================================================
     //Tell the client why the session ended, so it doesn't have to wait for a timeout.
     //Once there is a commander, only it is told. (client_addr may belong to another sender.)
@@ -304,6 +296,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         outgoingReply.replyType = ReplyType_SessionEnded;
         outgoingReply.endReason = endReason;
         outgoingReply.endDetail = endDetail;
+        outgoingReply.robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
         mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)endDestination, sizeof(struct sockaddr_in));
     }
@@ -654,14 +647,6 @@ void Ros_RtMotionControl_OpenSocket()
         sockRtCommandListener = -1; 
         motoRosAssert_withMsg(false, SUBCODE_FAIL_BIND_RT_SOCKET, "Failed to bind RT socket");
     }
-
-    //=========================================================================================
-    sockRtStatusSender = mpSocket(AF_INET, SOCK_DGRAM, 0);
-    if (sockRtStatusSender < 0)
-    {
-        Ros_Debug_BroadcastMsg("ERROR: Could not allocate Status socket for RT interface");
-        motoRosAssert_withMsg(false, SUBCODE_FAIL_ALLOCATE_RT_FB_SOCKET, "Failed to allocate RT socket");
-    }
 }
 
 void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
@@ -863,65 +848,40 @@ void Ros_RtMotionControl_PurgeBufferedPackets()
     }
 }
 
-//Essentially a clone of the /robot_status topic. But decoupled from the industrial_msgs/RobotStatus type.
-void Ros_RtMotionControl_SendRobotStatus()
+//Reads the robot's state into a bitfield of RobotStatusBits
+static UINT32 Ros_RtMotionControl_ReadRobotStatus()
 {
-    RobotState stateMsg;
+    USHORT ioStatus[IO_ROBOTSTATUS_MAX];
+    UINT32 status = 0;
 
-    int client_addr_len = sizeof(client_addr_status_messages);
+    //Read into a local array. g_Ros_Controller.ioStatus is only updated while the agent is connected.
+    if (!Ros_Controller_StatusRead(ioStatus))
+        return 0;
 
-    //Duplicate logic of ControllerStatusIo
-    MP_IO_INFO ioStatusAddr[IO_ROBOTSTATUS_MAX];            // Array of Specific Input Address representing the I/O status
-    USHORT ioStatus[IO_ROBOTSTATUS_MAX];                    // Array storing the current status of the controller
+    if (ioStatus[IO_ROBOTSTATUS_SERVO] != 0 && ioStatus[IO_ROBOTSTATUS_INECOMODE] == 0)
+        status |= RobotStatus_DrivesPowered;
 
-    ioStatusAddr[IO_ROBOTSTATUS_ALARM_MINOR].ulAddr = 50011;       // Alarm
-    ioStatusAddr[IO_ROBOTSTATUS_ALARM_SYSTEM].ulAddr = 50012;      // Alarm
-    ioStatusAddr[IO_ROBOTSTATUS_ALARM_USER].ulAddr = 50013;        // Alarm
-    ioStatusAddr[IO_ROBOTSTATUS_ERROR].ulAddr = 50014;             // Error
-    ioStatusAddr[IO_ROBOTSTATUS_PLAY].ulAddr = 50054;              // Play
-    ioStatusAddr[IO_ROBOTSTATUS_TEACH].ulAddr = 50053;             // Teach
-    ioStatusAddr[IO_ROBOTSTATUS_REMOTE].ulAddr = 80011; //50056;   // Remote  // Modified E.M. 7/9/2013
-    ioStatusAddr[IO_ROBOTSTATUS_OPERATING].ulAddr = 50070;         // Operating
-    ioStatusAddr[IO_ROBOTSTATUS_HOLD].ulAddr = 50071;              // Hold
-    ioStatusAddr[IO_ROBOTSTATUS_SERVO].ulAddr = 50073;             // Servo ON
-    ioStatusAddr[IO_ROBOTSTATUS_ESTOP_EX].ulAddr = 80025;          // External E-Stop
-    ioStatusAddr[IO_ROBOTSTATUS_ESTOP_PP].ulAddr = 80026;          // Pendant E-Stop
-    ioStatusAddr[IO_ROBOTSTATUS_ESTOP_CTRL].ulAddr = 80027;        // Controller E-Stop
-    ioStatusAddr[IO_ROBOTSTATUS_WAITING_ROS].ulAddr = IO_FEEDBACK_WAITING_MP_INCMOVE; // Job input signaling ready for external motion
-    ioStatusAddr[IO_ROBOTSTATUS_INECOMODE].ulAddr = 50727;         // Energy Saving Mode
-    ioStatusAddr[IO_ROBOTSTATUS_CONT_CYC_MODE].ulAddr = 50052;     // Continuous Cycle Mode
-    ioStatusAddr[IO_ROBOTSTATUS_ALARM_MAJOR].ulAddr = 50010;       // Alarm
-#if (YRC1000||YRC1000u)
-    ioStatusAddr[IO_ROBOTSTATUS_PFL_STOP].ulAddr = 81702;          // PFL function stopped the motion
-    ioStatusAddr[IO_ROBOTSTATUS_PFL_ESCAPE].ulAddr = 81703;        // PFL function escape from clamping motion
-    ioStatusAddr[IO_ROBOTSTATUS_PFL_AVOIDING].ulAddr = 15120;      // PFL function avoidance operating
-    ioStatusAddr[IO_ROBOTSTATUS_PFL_AVOID_JOINT].ulAddr = 15124;   // PFL function avoidance joint enabled
-    ioStatusAddr[IO_ROBOTSTATUS_PFL_AVOID_TRANS].ulAddr = 15125;   // PFL function avoidance translation enabled
-#endif
+    if (ioStatus[IO_ROBOTSTATUS_ESTOP_EX] == 0 || ioStatus[IO_ROBOTSTATUS_ESTOP_PP] == 0 || ioStatus[IO_ROBOTSTATUS_ESTOP_CTRL] == 0)
+        status |= RobotStatus_EStopped;
 
-    //-------------------------------------------------------------------------------
+    if (ioStatus[IO_ROBOTSTATUS_HOLD] != 0)
+        status |= RobotStatus_Hold;
 
+    if (ioStatus[IO_ROBOTSTATUS_ALARM_MAJOR] != 0 || ioStatus[IO_ROBOTSTATUS_ALARM_MINOR] != 0 ||
+        ioStatus[IO_ROBOTSTATUS_ALARM_SYSTEM] != 0 || ioStatus[IO_ROBOTSTATUS_ALARM_USER] != 0)
+        status |= RobotStatus_Alarm;
 
-    stateMsg.version = VERSION_OF_ROBOT_STATE_PACKET;
+    if (ioStatus[IO_ROBOTSTATUS_ERROR] != 0)
+        status |= RobotStatus_Error;
 
-    while (TRUE)
-    {
-        Ros_Sleep(g_nodeConfigSettings.rt_status_sleep_period);
+    if (ioStatus[IO_ROBOTSTATUS_PLAY] != 0)
+        status |= RobotStatus_PlayMode;
 
-        //-------------------------------------------------------------------------------
-        mpReadIO(ioStatusAddr, ioStatus, IO_ROBOTSTATUS_MAX);
+    if (ioStatus[IO_ROBOTSTATUS_REMOTE] != 0)
+        status |= RobotStatus_RemoteMode;
 
-        //-------------------------------------------------------------------------------
-        stateMsg.drives_powered = (ioStatus[IO_ROBOTSTATUS_SERVO] != 0 && ioStatus[IO_ROBOTSTATUS_INECOMODE] != 0);
-        stateMsg.e_stopped = (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_ESTOP_EX] == 0)
-                                || (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_ESTOP_PP] == 0)
-                                || (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_ESTOP_CTRL] == 0);
-        stateMsg.play_mode = (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PLAY] != 0);
-        stateMsg.motion_possible = TRUE; //This task gets killed if the robot is in a state where motion isn't possible
-        stateMsg.error = 0; //This task gets killed if the robot is in an error state
-        stateMsg.error_code = 0;
+    if (Ros_Controller_IsPflActiveInStatus(ioStatus))
+        status |= RobotStatus_PflActive;
 
-        //-------------------------------------------------------------------------------
-        mpSendTo(sockRtStatusSender, (char*)&stateMsg, sizeof(RobotState), 0, (struct sockaddr*)&client_addr_status_messages, client_addr_len);
-    }
+    return status;
 }
