@@ -38,6 +38,11 @@ static struct sockaddr_in client_addr_status_messages;
 static LONG prevRtCmdPosition[MAX_GROUPS][MAX_AXES];
 static LONG howMuchShouldIHaveMoved[MAX_GROUPS][MAX_AXES];
 
+//The motion API only accepts whole units (pulse, micrometer, 0.0001 degree). The fraction
+//of a unit which was commanded but not sent is carried over to the next cycle. Otherwise the
+//truncation would accumulate into a steady drift when streaming small increments.
+static double residualIncrement[MAX_GROUPS][MP_GRP_AXES_NUM];
+
 void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
 {
     MP_EXPOS_DATA moveData;
@@ -61,6 +66,7 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
 
     bzero(prevRtCmdPosition, MAX_GROUPS * MAX_AXES * sizeof(LONG));
     bzero(howMuchShouldIHaveMoved, MAX_GROUPS * MAX_AXES * sizeof(LONG));
+    bzero(residualIncrement, sizeof(residualIncrement));
 
     if (mode == MOTION_MODE_RT_JOINT)
         Ros_RtMotionControl_InitJointSpace(&moveData);
@@ -391,30 +397,76 @@ bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
     return true;
 }
 
+//A joint may be commanded this much more than its maximum increment per cycle, so that a client
+//which computes the maximum from rounded conversion factors isn't rejected. What is sent is
+//still limited to the maximum; the excess is sent in a later cycle.
+#define RT_MAX_INCREMENT_TOLERANCE_PULSES   0.001
+
+//Converts an increment (already scaled to motoman units) to the nearest whole number of
+//units, and carries the rest (up to half a unit, either way) over to the next cycle.
+static LONG Ros_RtMotionControl_TakeWholeUnits(double increment, double* residual)
+{
+    double total = increment + *residual;
+    LONG whole = (LONG)((total < 0.0) ? (total - 0.5) : (total + 0.5));
+
+    *residual = total - whole;
+    return whole;
+}
+
 bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
-    int i, groupNo;
+    int axis, groupNo;
+    double pulsesPerUnit;
+    double pulses;
 
-    long pulse_increments[MAX_PULSE_AXES];
-
-    // For each control group, convert radians to pulses and prepare moveData
+    // For each control group, convert radians (or meters) to pulses and prepare moveData
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
         CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
 
         //joints must be in moto-order
-        Ros_CtrlGroup_ConvertRosUnitsToMotoUnits(ctrlGroup, incomingCommand->delta[groupNo], pulse_increments);
-
-        // Copy pulse increments to moveData
-        for (i = 0; i < ctrlGroup->numAxes; i++)
+        //
+        //Check every axis, not just the first numAxes. Some robots have gaps in their
+        //axis layout. (ex: a 4-axis palletizer (SLU--T-) has 4 axes, but T is at index 5)
+        for (axis = 0; axis < MP_GRP_AXES_NUM; axis++)
         {
-            moveData->grp_pos_info[groupNo].pos[i] = pulse_increments[i];
-            
-            if (abs(pulse_increments[i]) > ctrlGroup->maxInc.maxIncrement[i])
+            if (Ros_CtrlGroup_IsInvalidAxis(ctrlGroup, axis))
             {
-                Ros_Debug_BroadcastMsg("ERROR: Group [%d] Axis [%d] has been commanded to move [%d] pulse counts this increment, exceeding the maximum limit of [%d] pulse counts", groupNo, i, pulse_increments[i], ctrlGroup->maxInc.maxIncrement[i]);
+                moveData->grp_pos_info[groupNo].pos[axis] = 0;
+                continue;
+            }
+
+            if (ctrlGroup->axisType.type[axis] == AXIS_ROTATION)
+                pulsesPerUnit = ctrlGroup->pulseToRad.PtoR[axis];
+            else if (ctrlGroup->axisType.type[axis] == AXIS_LINEAR)
+                pulsesPerUnit = ctrlGroup->pulseToMeter.PtoM[axis];
+            else
+                pulsesPerUnit = 1.0;
+
+            pulses = incomingCommand->delta[groupNo][axis] * pulsesPerUnit;
+
+            //Written so that NaN and infinity also fail this check
+            if (!(fabs(pulses) <= ctrlGroup->maxInc.maxIncrement[axis] + RT_MAX_INCREMENT_TOLERANCE_PULSES))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] Axis [%d] has been commanded to move [%f] pulse counts this increment, exceeding the maximum limit of [%d] pulse counts",
+                    groupNo, axis, pulses, ctrlGroup->maxInc.maxIncrement[axis]);
                 return false;
             }
+
+            LONG whole = Ros_RtMotionControl_TakeWholeUnits(pulses, &residualIncrement[groupNo][axis]);
+
+            //The carried fraction can round an increment at the limit one pulse past it.
+            //Send the limit instead, and carry that pulse over too.
+            //(maxIncrement is unsigned. Compare it as a signed number, or -maxIncrement wraps around.)
+            LONG maxIncrement = (LONG)ctrlGroup->maxInc.maxIncrement[axis];
+            if (whole > maxIncrement || whole < -maxIncrement)
+            {
+                LONG limit = (whole > 0) ? maxIncrement : -maxIncrement;
+                residualIncrement[groupNo][axis] += whole - limit;
+                whole = limit;
+            }
+
+            moveData->grp_pos_info[groupNo].pos[axis] = whole;
         }
 
         moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
