@@ -61,7 +61,7 @@ typedef enum
     TCP_Qz,
     TCP_Qw,
 
-    TCP_8,          //pulse
+    TCP_Re,         //radians (elbow angle of 7-axis robots)
 
     MAX_AXES //maxies
 } CartesianIndices;
@@ -91,7 +91,7 @@ struct RtPacket_
     //For joint-space, this will be radians of each joint.
     //
     //For cartesian, this will be meters and quaternion of the TCP.
-    //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw 8].
+    //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw Re].
     //See CartesianIndices enum.
     double delta[MAX_GROUPS][MP_GRP_AXES_NUM];
     
