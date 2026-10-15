@@ -89,11 +89,67 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
         if (Ros_RtMotionControl_WaitForPacket() > 0)
         {
             bzero(&incomingCommand, sizeof(incomingCommand));
+            client_addr_len = sizeof(client_addr);
             bytes_received = mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len);
+            if (bytes_received < 0)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: recvFrom returned an error");
+                break;
+            }
+
+            //Only allow a single commander. A second sender means the system is misconfigured,
+            //so the session is ended rather than letting two clients command the robot.
+            if (!bFirstRecv && memcmp(&client_addr.sin_addr.s_addr, &previous_client_addr.sin_addr.s_addr, sizeof(UINT32)) != 0)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Received command packets from multiple sources (0x%08X and 0x%08X)",
+                                        (UINT32)previous_client_addr.sin_addr.s_addr,
+                                        (UINT32)client_addr.sin_addr.s_addr);
+                break; //drop the connection
+            }
+
+            if (bytes_received != sizeof(RtPacket))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Received a packet of [%d] bytes. RtPacket must be [%d] bytes.",
+                                        bytes_received, (int)sizeof(RtPacket));
+                break; //drop the connection
+            }
+
+            //Verify version of the command packet
+            if (incomingCommand.version != VERSION_REAL_TIME_INTERFACE)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: The command packet is version [%d]. It must be version [%d]",
+                                        incomingCommand.version, VERSION_REAL_TIME_INTERFACE);
+                break; //drop the connection
+            }
+
+            //Verify the packet type
+            packetTypeOK = TRUE;
+            switch (mode)
+            {
+            case MOTION_MODE_RT_JOINT:
+                if (incomingCommand.packetType != PacketType_Joint_Increments)
+                {
+                    packetTypeOK = false;
+                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Joint Increments)");
+                }
+                break;
+            case MOTION_MODE_RT_CARTESIAN:
+                if (incomingCommand.packetType != PacketType_Cart_Increments)
+                {
+                    packetTypeOK = false;
+                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Cartesian Increments)");
+                }
+                break;
+            default:
+                packetTypeOK = false;
+                Ros_Debug_BroadcastMsg("ERROR: Unexpected motion mode is active");
+            }
+            if (!packetTypeOK)
+                break; //drop the connection
 
             if (bFirstRecv)
             {
-                previous_client_addr = client_addr; //only allow a single commander
+                previous_client_addr = client_addr;
                 //flag is cleared down below
 
                 //setup destination for status messages
@@ -110,98 +166,48 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
                 //    break;
                 //}
             }
-            else
+
+            //Check for old or same sequence ID (wraparound safe)
+            if (((int32_t)(incomingCommand.sequenceId - previousSequenceId) <= 0) && !bFirstRecv)
             {
-                if (memcmp(&client_addr.sin_addr.s_addr, &previous_client_addr.sin_addr.s_addr, sizeof(UINT32)) != 0)
-                {
-                    Ros_Debug_BroadcastMsg("ERROR: Received command packets from multiple sources (0x%08X and 0x%08X)",
-                                            (UINT32)previous_client_addr.sin_addr.s_addr,
-                                            (UINT32)client_addr.sin_addr.s_addr);
-                    break; //drop the connection
-                }
+                // This packet is old or a duplicate.
+                Ros_Debug_BroadcastMsg("WARN: Received old command packet (prev: %u, new: %u)", previousSequenceId, incomingCommand.sequenceId);
+
+                // Resend the previous reply and drop this packet.
+                mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
+                continue;
             }
 
-            if (bytes_received == sizeof(RtPacket))
+            //Check if the sequence ID jumped too far ahead (wraparound safe)
+            if ((incomingCommand.sequenceId - previousSequenceId) > g_nodeConfigSettings.max_sequence_diff_for_rt_msg)
             {
-                //Verify version of the command packet
-                if (incomingCommand.version != VERSION_REAL_TIME_INTERFACE)
-                {
-                    Ros_Debug_BroadcastMsg("ERROR: The command packet must be version [%d]", VERSION_REAL_TIME_INTERFACE);
+                Ros_Debug_BroadcastMsg("ERROR: Missed too many command packets (prev: %u, new: %u)",
+                    previousSequenceId, incomingCommand.sequenceId);
+                break; // Drop the connection
+            }
+
+            if (mode == MOTION_MODE_RT_JOINT)
+            {
+                if (!Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData))
                     break; //drop the connection
-                }
-
-                //Verify the packet type
-                packetTypeOK = TRUE;
-                switch (mode)
-                {
-                case MOTION_MODE_RT_JOINT:
-                    if (incomingCommand.packetType != PacketType_Joint_Increments)
-                    {
-                        packetTypeOK = false;
-                        Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Joint Increments)");
-                    }
-                    break;
-                case MOTION_MODE_RT_CARTESIAN:
-                    if (incomingCommand.packetType != PacketType_Cart_Increments)
-                    {
-                        packetTypeOK = false;
-                        Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Cartesian Increments)");
-                    }
-                    break;
-                default:
-                    packetTypeOK = false;
-                    Ros_Debug_BroadcastMsg("ERROR: Unexpected motion mode is active");
-                }
-                if (!packetTypeOK)
-                    break; //drop the connection
-
-                //Check for old or same sequence ID (wraparound safe)
-                if (((int32_t)(incomingCommand.sequenceId - previousSequenceId) <= 0) && !bFirstRecv)
-                {
-                    // This packet is old or a duplicate.
-                    Ros_Debug_BroadcastMsg("WARN: Received old command packet (prev: %u, new: %u)", previousSequenceId, incomingCommand.sequenceId);
-
-                    // Resend the previous reply and drop this packet.
-                    mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
-                    continue;
-                }
-
-                //Check if the sequence ID jumped too far ahead (wraparound safe)
-                if ((incomingCommand.sequenceId - previousSequenceId) > g_nodeConfigSettings.max_sequence_diff_for_rt_msg)
-                {
-                    Ros_Debug_BroadcastMsg("ERROR: Missed too many command packets (prev: %u, new: %u)",
-                        previousSequenceId, incomingCommand.sequenceId);
-                    break; // Drop the connection
-                }
-
-                if (mode == MOTION_MODE_RT_JOINT)
-                {
-                    if (!Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData))
-                        break; //drop the connection
-                }
-                else
-                {
-                    if (!Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData))
-                        break; //drop the connection
-                }
-
-                motionDeviationDetected = Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex);
-
-                // Send increment to robot
-                int ret = mpExRcsIncrementMove(&moveData);
-                if (ret != OK)
-                {
-                    Ros_Debug_BroadcastMsg("WARN: mpExRcsIncrementMove returned %d", ret);
-                    break; //drop the connection
-                }
-
-                bFirstRecv = false;
             }
             else
             {
-                Ros_Debug_BroadcastMsg("ERROR: recvFrom returned an error");
-                break;
+                if (!Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData))
+                    break; //drop the connection
             }
+
+            motionDeviationDetected = Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex);
+
+            // Send increment to robot
+            int ret = mpExRcsIncrementMove(&moveData);
+            if (ret != OK)
+            {
+                Ros_Debug_BroadcastMsg("WARN: mpExRcsIncrementMove returned %d", ret);
+                break; //drop the connection
+            }
+
+            bFirstRecv = false;
 
             // Wait for next interpolation cycle
             mpClkAnnounce(MP_INTERPOLATION_CLK);
