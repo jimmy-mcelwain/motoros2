@@ -61,6 +61,10 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     struct sockaddr_in previous_client_addr;
     int client_addr_len = sizeof(client_addr);
 
+    //One byte larger than RtPacket. UDP truncates a datagram to fit the buffer, so an
+    //oversized packet would otherwise be received as exactly sizeof(RtPacket) bytes.
+    char receiveBuffer[sizeof(RtPacket) + 1];
+
     RtPacket incomingCommand;
     RtPacket lastExecutedCommand;
     RtReply outgoingReply;
@@ -108,9 +112,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         int waitResult = Ros_RtMotionControl_WaitForPacket();
         if (waitResult > 0)
         {
-            bzero(&incomingCommand, sizeof(incomingCommand));
             client_addr_len = sizeof(client_addr);
-            bytes_received = mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len);
+            bytes_received = mpRecvFrom(sockRtCommandListener, receiveBuffer, sizeof(receiveBuffer), 0, (struct sockaddr*)&client_addr, &client_addr_len);
             if (bytes_received < 0)
             {
                 Ros_Debug_BroadcastMsg("ERROR: recvFrom returned an error");
@@ -139,6 +142,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 bEndReplyToSender = true;
                 break; //drop the connection
             }
+            memcpy(&incomingCommand, receiveBuffer, sizeof(RtPacket));
 
             //Verify version of the command packet
             if (incomingCommand.version != VERSION_REAL_TIME_INTERFACE)
