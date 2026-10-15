@@ -15,6 +15,10 @@
 extern void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode);
 extern void Ros_RtMotionControl_OpenSocket();
 extern void Ros_RtMotionControl_Cleanup();
+extern void Ros_RtMotionControl_PrepareSession();
+extern BOOL Ros_RtMotionControl_IsSessionRunning();
+extern BOOL Ros_RtMotionControl_StopSession();
+extern void Ros_RtMotionControl_AbortSession();
 
 typedef enum
 {
