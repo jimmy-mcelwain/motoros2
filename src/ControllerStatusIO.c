@@ -382,19 +382,28 @@ BOOL Ros_Controller_IsMotionReady()
 }
 
 
-BOOL Ros_Controller_IsPflActive()
+//Whether PFL has stopped the robot, or is escaping or avoiding, according to the given I/O status
+//(g_Ros_Controller.ioStatus, or a status read with Ros_Controller_StatusRead)
+BOOL Ros_Controller_IsPflActiveInStatus(USHORT const ioStatus[IO_ROBOTSTATUS_MAX])
 {
 #if (YRC1000||YRC1000u)
     if (g_Ros_Controller.bPFLEnabled) {
-        if (g_Ros_Controller.bPFLduringRosMove || g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PFL_STOP] || g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PFL_ESCAPE] ||
-            (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PFL_AVOIDING]
-                && (g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PFL_AVOID_JOINT] || g_Ros_Controller.ioStatus[IO_ROBOTSTATUS_PFL_AVOID_TRANS])) != 0)
+        if (g_Ros_Controller.bPFLduringRosMove || ioStatus[IO_ROBOTSTATUS_PFL_STOP] || ioStatus[IO_ROBOTSTATUS_PFL_ESCAPE] ||
+            (ioStatus[IO_ROBOTSTATUS_PFL_AVOIDING]
+                && (ioStatus[IO_ROBOTSTATUS_PFL_AVOID_JOINT] || ioStatus[IO_ROBOTSTATUS_PFL_AVOID_TRANS])) != 0)
         {
             return TRUE;
         }
     }
+#else
+    (void)ioStatus;
 #endif
     return FALSE;
+}
+
+BOOL Ros_Controller_IsPflActive()
+{
+    return Ros_Controller_IsPflActiveInStatus(g_Ros_Controller.ioStatus);
 }
 
 BOOL Ros_Controller_IsMpIncMoveErrorActive()

@@ -195,7 +195,7 @@ enum CartesianIndices
 ### Data format (reply)
 
 The reply packet is a *packed* `RtReply` structure.
-This will echo the sequence ID, indicate whether the session is still active, provide feedback position, and provide commanded position.
+This will echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
 
 Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increment of the **previous** command cycle as sent.
 Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity.
@@ -225,6 +225,12 @@ struct RtReply
     //Additional information about the endReason. See EndReason enum.
 
     int endDetail;
+
+    //Bitfield of RobotStatusBits. This is read right after the previous reply
+    //was sent, so it is one cycle old. (It is current in a SessionEnded reply.)
+    //Any change which prevents motion will also end the session.
+
+    UINT32 robotStatus;
 
     //This is indicative of where the robot is physically located.
     //Please note that this will trail behind the commanded position.
@@ -279,6 +285,26 @@ enum EndReason
 }
 ```
 
+### Robot status
+
+```c
+enum RobotStatusBits
+{
+    DrivesPowered   = (1 << 0),     //Servo power is on, and not in energy saving mode
+    EStopped        = (1 << 1),     //Pendant, external or controller E-stop
+    Hold            = (1 << 2),
+    Alarm           = (1 << 3),     //Major, minor, system or user alarm
+    Error           = (1 << 4),
+    PlayMode        = (1 << 5),     //Pendant is in PLAY or REMOTE mode (not TEACH)
+    PflActive       = (1 << 6),     //PFL has stopped the robot, or is escaping/avoiding (HC robots only)
+    RemoteMode      = (1 << 7),     //Pendant is in REMOTE mode
+}
+```
+
+While a session is active, the robot is necessarily powered, in REMOTE mode, and free of E-stops, alarms and errors.
+These bits are most useful in the `SessionEnded` reply, to determine why the robot rejected motion (`MotionRejected`).
+For complete controller status (ex: alarm codes), use the [robot_status](ros_api.md#robot_status) topic.
+
 If the session ends before any command has been executed, the final reply is only sent if a packet was rejected, and it is sent to the host which sent that packet.
 In that case, the position data is all zeros.
 
@@ -289,15 +315,14 @@ The field sizes are:
 
 | Type | Size (bytes) |
 | ---- | ------------ |
-| `int`, `UINT32`, `PacketType`, `BOOL` | 4 |
+| `int`, `UINT32`, `PacketType` | 4 |
 | `double` | 8 |
 | `bool` | 1 |
 
 | Structure | Size (bytes) | Python `struct` format |
 | --------- | ------------ | ---------------------- |
 | `RtPacket` | 620 | `<iiI64d8i64x` |
-| `RtReply` | 2065 | `<IIIi256d?` |
-| `RobotState` | 28 | `<7i` |
+| `RtReply` | 2069 | `<IIIiI256d?` |
 
 `MAX_GROUPS` and `MP_GRP_AXES_NUM` are both `8`.
 Unused groups and axes are ignored (set them to `0`).
@@ -317,25 +342,3 @@ The service to start those modes will fail when invoked.
 Calling `stop_traj_mode` ends the session (the final reply has `endReason` `StopRequested`).
 At that time, another motion mode may be used.
 The UDP port stays open, so a new session can be started with `start_rt_mode`.
-
-## R/T Status Monitoring
-
-When the R/T Motion Control is activated, MotoROS2 will begin to send the `RobotState` structure on port UDP `22001` (default).
-This is essentially a clone of the `/robot_status` topic.
-But decoupled from the `industrial_msgs/RobotStatus` type.
-
-```c
-struct RobotState
-{
-    int version;
-
-    BOOL drives_powered;
-    BOOL e_stopped;
-    BOOL play_mode;
-    BOOL motion_possible;
-    BOOL error;
-    int error_code;
-}
-```
-
-This will be sent every `rt_status_sleep_period` milliseconds.

@@ -111,8 +111,6 @@ typedef enum
 #endif
 
 #define DEFAULT_RT_LISTENER_UDP_PORT_NUMBER     "22000"
-#define DEFAULT_RT_STATUS_UDP_PORT_NUMBER       "22001"
-#define DEFAULT_RT_STATUS_SLEEP_PERIOD          10
 
 #define DEFAULT_TIMEOUT_FOR_RT_MSG      5000
 
@@ -165,8 +163,6 @@ typedef struct
     Ros_UserLan_Port_Setting debug_broadcast_port;
 
     char rt_listener_udp_port_number[MAX_YAML_STRING_LEN];
-    char rt_status_udp_port_number[MAX_YAML_STRING_LEN];
-    int rt_status_sleep_period;
 
     int timeout_for_rt_msg;
     int max_sequence_diff_for_rt_msg;
