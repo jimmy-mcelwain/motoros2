@@ -1211,6 +1211,14 @@ BOOL Ros_MotionControl_StopMotion(BOOL bKeepJobRunning)
     //
     // Otherwise mpExRcsIncrementMove(..) will fail trying to submit an increment
     // while INIT_ROS has already been suspended.
+    //
+    // The R/T task doesn't use bStopMotion. End its session instead, so it
+    // exits with EndReason_StopRequested rather than having its next
+    // increment rejected by the HOLD (reported to the client as
+    // EndReason_MotionRejected).
+    if (Ros_MotionControl_IsMotionMode_RealTime())
+        Ros_MotionControl_StopInterpolationTask();
+
     g_Ros_Controller.bStopMotion = TRUE;
 
     holdSendData.sHold = ON;
