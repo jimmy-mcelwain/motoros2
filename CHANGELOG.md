@@ -15,6 +15,7 @@ New functionality:
 
 - Add new motion mode for real-time control of the robot. This pipes the user commands directly to the motion API with minimal overhead. ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
 - The real-time mode is started with the new `start_rt_mode` service, which can also return the new result codes `NOT_READY_INVALID_SELECTION` (`119`) and `NOT_READY_ALREADY_ACTIVE` (`120`). This requires a version of `motoros2_interfaces` which includes `StartRtMode`, `ControlModeEnum` and `JointOrderEnum` ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
+- New configuration items for the real-time mode: `rt_listener_udp_port_number`, `timeout_for_rt_msg`, `max_sequence_diff_for_rt_msg`, and the `motionDeviationDetected` thresholds `rt_motion_deviation_threshold_pulses`, `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
 
 Changes:
 

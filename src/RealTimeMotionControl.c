@@ -24,6 +24,7 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static int Ros_RtMotionControl_WaitForPacket();
+static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to);
 
 //How often the R/T task checks for a stop request while waiting for a command packet
 #define RT_STOP_POLL_PERIOD_MS      100
@@ -636,7 +637,7 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
             q.w /= norm;
         }
 
-        rotation = 2.0 * atan2(sqrt((q.x * q.x) + (q.y * q.y) + (q.z * q.z)), fabs(q.w)) * DEGREES_PER_RAD;
+        rotation = Ros_RtMotionControl_RotationAngle(NULL, &q) * DEGREES_PER_RAD;
         if (rotation > (max_rotation_deg_per_ms * g_Ros_Controller.interpolPeriod))
         {
             Ros_Debug_BroadcastMsg("ERROR: Group [%d] The rotation increment for the TCP [%f deg] exceeds the maximum limit of 360 deg/sec", groupNo, rotation);
@@ -820,7 +821,9 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
 
         LONG difference;
         LONG howMuchDidIActuallyMove[MAX_AXES];
+        LONG previousPosition[MAX_AXES];
         bzero(howMuchDidIActuallyMove, sizeof(LONG) * MAX_AXES);
+        memcpy(previousPosition, prevRtCmdPosition[groupIndex], sizeof(previousPosition));
 
         if (mode == MOTION_MODE_RT_JOINT)
         {
@@ -856,32 +859,68 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
             }
         }
 		
-        for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
+        if (mode == MOTION_MODE_RT_JOINT)
         {
-            //When working in cartesian space, we're only going to monitor the translation.
-            //1. There is no FSU speed limit for rotation. So it's moot.
-            //2. When rotating by some increment, that rotation gets 'spread out' over multiple
-            //   axes. Even if I put all of my commanded increment into a single axis, all 
-            //   three of them are going to react. So, the cmd-value of my intended axis may
-            //   not be the value I expect.
-            if (mode == MOTION_MODE_RT_CARTESIAN && axis > TCP_Z)
+            //pulses
+            for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
             {
-                break;
+                difference = howMuchShouldIHaveMoved[groupIndex][axis] - howMuchDidIActuallyMove[axis];
+                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_pulses)
+                    returnValue = TRUE;
+            }
+        }
+        else if (mode == MOTION_MODE_RT_CARTESIAN)
+        {
+            //Translation (micrometers)
+            for (int axis = TCP_X; axis <= TCP_Z; axis += 1)
+            {
+                difference = howMuchShouldIHaveMoved[groupIndex][axis] - howMuchDidIActuallyMove[axis];
+                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers)
+                    returnValue = TRUE;
             }
 
-            difference = howMuchShouldIHaveMoved[groupIndex][axis] - howMuchDidIActuallyMove[axis];
-            if (abs(difference) > MAX_INCREMENT_DEVIATION_FOR_FSU_DETECTION)
-            {
-                //Ros_Debug_BroadcastMsg("howMuchShouldIHaveMoved[%d][%d] = %d", groupIndex, axis, howMuchShouldIHaveMoved[groupIndex][axis]);
-                //Ros_Debug_BroadcastMsg("howMuchDidIActuallyMove[%d] = %d", axis, howMuchDidIActuallyMove[axis]);
-                //Ros_Debug_BroadcastMsg("difference = %d", difference);
-                //Ros_Debug_BroadcastMsg("---------");
+            //Rotation (0.0001 degrees)
+            //The orientation is in Euler angles, so a rotation about one axis can change all
+            //three of them. The individual angles can't be compared. Instead, compare the size
+            //of the rotation which was commanded with the size of the rotation which happened.
+            Quaternion qCommanded, qPrevious, qCurrent;
+            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(howMuchShouldIHaveMoved[groupIndex][3],
+                howMuchShouldIHaveMoved[groupIndex][4], howMuchShouldIHaveMoved[groupIndex][5], &qCommanded);
+            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(previousPosition[3], previousPosition[4], previousPosition[5], &qPrevious);
+            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(cartRespData.lPos[3], cartRespData.lPos[4], cartRespData.lPos[5], &qCurrent);
 
+            double angleDifference = Ros_RtMotionControl_RotationAngle(NULL, &qCommanded) - Ros_RtMotionControl_RotationAngle(&qPrevious, &qCurrent);
+            if (fabs(RAD_TO_DEG_0001(angleDifference)) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
                 returnValue = TRUE;
+
+            //Elbow angle (0.0001 degrees)
+            if (g_Ros_Controller.ctrlGroups[groupIndex]->numAxes >= 7)
+            {
+                difference = howMuchShouldIHaveMoved[groupIndex][6] - howMuchDidIActuallyMove[6];
+                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
+                    returnValue = TRUE;
             }
         }
     }
     return returnValue;
+}
+
+//Returns the angle (radians) of the rotation from 'from' to 'to'.
+//If 'from' is NULL, returns the angle of the rotation 'to'.
+static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to)
+{
+    double x = to->x, y = to->y, z = to->z, w = to->w;
+
+    if (from != NULL)
+    {
+        //conjugate(from) * to
+        w = from->w * to->w + from->x * to->x + from->y * to->y + from->z * to->z;
+        x = from->w * to->x - from->x * to->w - from->y * to->z + from->z * to->y;
+        y = from->w * to->y - from->y * to->w - from->z * to->x + from->x * to->z;
+        z = from->w * to->z - from->z * to->w - from->x * to->y + from->y * to->x;
+    }
+
+    return 2.0 * atan2(sqrt((x * x) + (y * y) + (z * z)), fabs(w));
 }
 
 void Ros_RtMotionControl_PurgeBufferedPackets()

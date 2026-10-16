@@ -179,12 +179,6 @@ struct RtReply_
 typedef struct RtReply_ RtReply;
 
 
-//When checking for interference from the FSU speed limit, there will
-//likely be some small rounding errors. So, the deviation must exceed
-//this amount before the system will report that the FSU has limited
-//the incoming motion command.
-#define MAX_INCREMENT_DEVIATION_FOR_FSU_DETECTION   20  //20 pulse, 0.020 millimeters, or 0.0020 degrees
-
 #undef PACKED
 
 #endif //MOTOROS2_REALTIME_MOTION_CONTROL_H

@@ -212,6 +212,9 @@ Additionally, the `motionDeviationDetected` flag indicates that the controller d
 Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity.
 The motion continues, but not as commanded.
 Compare the commanded position in the reply with the expected one to see what happened.
+How far the motion may differ before the flag is set is configured with `rt_motion_deviation_threshold_pulses` (joint mode), and `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` (Cartesian mode) in the configuration file.
+In joint mode, the increments are sent in whole pulses, so the commanded position only differs from the expected one when the controller didn't execute them as sent.
+The joint mode threshold is therefore `0` by default: any difference sets the flag.
 
 ```c
 //##########################################################################

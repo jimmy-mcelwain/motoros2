@@ -116,6 +116,10 @@ typedef enum
 
 #define DEFAULT_MAX_SEQUENCE_DIFFERENCE 3
 
+#define DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_PULSES        0
+#define DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_MICROMETERS   100
+#define DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_DEG_0001      100
+
 typedef struct
 {
     //TODO(gavanderhoorn): add support for unsigned types
@@ -166,6 +170,10 @@ typedef struct
 
     int timeout_for_rt_msg;
     int max_sequence_diff_for_rt_msg;
+
+    int rt_motion_deviation_threshold_pulses;
+    int rt_motion_deviation_threshold_micrometers;
+    int rt_motion_deviation_threshold_deg_0001;
 } Ros_Configuration_Settings;
 
 extern Ros_Configuration_Settings g_nodeConfigSettings;

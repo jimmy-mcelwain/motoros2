@@ -126,6 +126,9 @@ Configuration_Item Ros_ConfigFile_Items[] =
     { "rt_listener_udp_port_number", g_nodeConfigSettings.rt_listener_udp_port_number, Value_String },
     { "timeout_for_rt_msg", &g_nodeConfigSettings.timeout_for_rt_msg, Value_Int },
     { "max_sequence_diff_for_rt_msg", &g_nodeConfigSettings.max_sequence_diff_for_rt_msg, Value_Int },
+    { "rt_motion_deviation_threshold_pulses", &g_nodeConfigSettings.rt_motion_deviation_threshold_pulses, Value_Int },
+    { "rt_motion_deviation_threshold_micrometers", &g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers, Value_Int },
+    { "rt_motion_deviation_threshold_deg_0001", &g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001, Value_Int },
 };
 
 void Ros_ConfigFile_SetAllDefaultValues()
@@ -241,6 +244,12 @@ void Ros_ConfigFile_SetAllDefaultValues()
     //=========
     //max_sequence_diff_for_rt_msg
     g_nodeConfigSettings.max_sequence_diff_for_rt_msg = DEFAULT_MAX_SEQUENCE_DIFFERENCE;
+
+    //=========
+    //rt_motion_deviation_threshold_*
+    g_nodeConfigSettings.rt_motion_deviation_threshold_pulses = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_PULSES;
+    g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_MICROMETERS;
+    g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001 = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_DEG_0001;
 }
 
 void Ros_ConfigFile_CheckYamlEvent(yaml_event_t* event)
@@ -699,7 +708,27 @@ void Ros_ConfigFile_ValidateNonCriticalSettings()
         }
     }
 
-
+    //-----------------------------------------------------------------------------
+    //These only affect the motionDeviationDetected hint in the R/T reply, so an
+    //invalid value doesn't warrant an alarm.
+    if (g_nodeConfigSettings.rt_motion_deviation_threshold_pulses < 0)
+    {
+        Ros_Debug_BroadcastMsg("rt_motion_deviation_threshold_pulses value %d is invalid; reverting to default of %d",
+            g_nodeConfigSettings.rt_motion_deviation_threshold_pulses, DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_PULSES);
+        g_nodeConfigSettings.rt_motion_deviation_threshold_pulses = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_PULSES;
+    }
+    if (g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers < 0)
+    {
+        Ros_Debug_BroadcastMsg("rt_motion_deviation_threshold_micrometers value %d is invalid; reverting to default of %d",
+            g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers, DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_MICROMETERS);
+        g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_MICROMETERS;
+    }
+    if (g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001 < 0)
+    {
+        Ros_Debug_BroadcastMsg("rt_motion_deviation_threshold_deg_0001 value %d is invalid; reverting to default of %d",
+            g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001, DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_DEG_0001);
+        g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001 = DEFAULT_RT_MOTION_DEVIATION_THRESHOLD_DEG_0001;
+    }
 }
 
 const char* const Ros_ConfigFile_Rmw_Qos_ProfileSetting_ToString(Ros_QoS_Profile_Setting val)
@@ -764,6 +793,9 @@ void Ros_ConfigFile_PrintActiveConfiguration(Ros_Configuration_Settings const* c
     Ros_Debug_BroadcastMsg("Config: rt_listener_udp_port_number = %s", config->rt_listener_udp_port_number);
     Ros_Debug_BroadcastMsg("Config: timeout_for_rt_msg = %d", config->timeout_for_rt_msg);
     Ros_Debug_BroadcastMsg("Config: max_sequence_diff_for_rt_msg = %d", config->max_sequence_diff_for_rt_msg);
+    Ros_Debug_BroadcastMsg("Config: rt_motion_deviation_threshold_pulses = %d", config->rt_motion_deviation_threshold_pulses);
+    Ros_Debug_BroadcastMsg("Config: rt_motion_deviation_threshold_micrometers = %d", config->rt_motion_deviation_threshold_micrometers);
+    Ros_Debug_BroadcastMsg("Config: rt_motion_deviation_threshold_deg_0001 = %d", config->rt_motion_deviation_threshold_deg_0001);
 }
 
 void Ros_ConfigFile_Parse()
