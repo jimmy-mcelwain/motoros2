@@ -354,3 +354,28 @@ publisher_qos:
 #
 # DEFAULT: 3
 #max_sequence_diff_for_rt_msg: 3
+
+#-----------------------------------------------------------------------------
+# Thresholds for the 'motionDeviationDetected' flag in the R/T reply packet.
+# Each cycle, the increment sent to the robot is compared with how far the
+# robot's command position actually moved. If they differ by more than these
+# amounts, the flag is set (ex: the FSU speed limit truncated the increment, or
+# the controller changed it near a singularity).
+#
+# Raise these if the flag is set during motion which isn't being limited.
+# They only affect the flag, not the motion.
+#
+# rt_motion_deviation_threshold_pulses: per joint, in encoder pulses (joint
+#   control mode). Joint increments are sent in whole pulses, so the
+#   commanded position only differs when the controller didn't execute them
+#   as sent. 0 means any difference sets the flag.
+# rt_motion_deviation_threshold_micrometers: TCP translation, per X/Y/Z
+#   (Cartesian mode)
+# rt_motion_deviation_threshold_deg_0001: TCP rotation angle, and the elbow
+#   angle of 7-axis robots (Cartesian mode), in 0.0001 degrees (the unit the
+#   controller uses). Ex: 100 = 0.01 degrees.
+#
+# DEFAULT: 0 pulses, 100 micrometers (0.1 mm), 100 (0.01 degrees)
+#rt_motion_deviation_threshold_pulses: 0
+#rt_motion_deviation_threshold_micrometers: 100
+#rt_motion_deviation_threshold_deg_0001: 100
