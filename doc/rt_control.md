@@ -68,6 +68,11 @@ While a session is running, any packet from another IP address ends it (`Multipl
 Before the first command, such a packet ends it as an invalid command.
 So make sure that no other host sends packets to the R/T port while a session is running (ex: block the port for other hosts with a firewall in front of the controller).
 
+MotoROS2 notices that the micro-ROS agent disconnected after a few seconds (ex: 4 to 8 seconds on a YRC1000).
+Until then, the session goes on, but replies may come late.
+A restart of the agent within a few seconds may not be noticed at all: the session then goes on, but MotoROS2's services, `stop_traj_mode` included, stay unavailable, so stop sending commands to end the session (`Timeout`).
+With `timeout_for_rt_msg` set to `-1`, the session then doesn't end by itself: only a command which the robot rejects ends it (ex: one sent while the robot is held). This has not been tested.
+
 When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why.
 See [Session end](#session-end).
 More detail is printed to the debug log.

@@ -127,6 +127,9 @@ sync_timeclock_with_agent: true
 # If the Agent PC disconnects from the robot while it is in motion, should the
 # robot come to a stop?
 #
+# An R/T session (start_rt_mode) always ends when the Agent disconnects,
+# whatever this is set to.
+#
 # DEFAULT: true
 stop_motion_on_disconnect: true
 

@@ -475,6 +475,16 @@ void Ros_Communication_StartExecutors(SEM_ID semCommunicationExecutorStatus)
     //===========================================================
     //===========================================================
 
+    //End an R/T session regardless of whether the robot is moving right now, or of
+    //stop_motion_on_disconnect. The client could command motion at any time, and a
+    //client which keeps streaming would keep the robot "in motion" indefinitely,
+    //so the wait below would never finish. (Cleanup would end the session anyway.)
+    if (Ros_MotionControl_IsMotionMode_RealTime())
+    {
+        Ros_Debug_BroadcastMsg("Agent disappeared. Ending R/T session.");
+        Ros_MotionControl_StopInterpolationTask();
+    }
+
     //stop robot motion if it's currently executing a trajectory and MotoROS2
     //has been configured to stop it
     if (Ros_Controller_IsInMotion())
