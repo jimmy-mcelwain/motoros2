@@ -220,6 +220,10 @@ void Ros_Controller_Cleanup()
     // Cleanup memory
     //
 
+    //Must be first. The interpolation task uses the control groups. This also ends the motion
+    //mode, so after the agent reconnects, the client must start it again.
+    Ros_MotionControl_StopTrajMode();
+
     for (int groupNum = 0; groupNum < MAX_CONTROLLABLE_GROUPS; groupNum += 1)
     {
         if (g_Ros_Controller.ctrlGroups[groupNum] != NULL)
@@ -229,8 +233,6 @@ void Ros_Controller_Cleanup()
             mpFree(g_Ros_Controller.ctrlGroups[groupNum]);
         }
     }
-
-    Ros_MotionControl_StopInterpolationTask();
 
     Ros_Debug_BroadcastMsg("Cleanup publisher robot status");
     ret = rcl_publisher_fini(&g_publishers_RobotStatus.robotStatus, &g_microRosNodeInfo.node);

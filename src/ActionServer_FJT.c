@@ -250,17 +250,19 @@ rcl_ret_t Ros_ActionServer_FJT_Goal_Received(rclc_action_goal_handle_t* goal_han
             rosidl_runtime_c__String__assign(&fjt_result_response.result.error_string, 
                 Ros_ErrorHandling_Init_Trajectory_Status_ToString((Init_Trajectory_Status) motomanErrorCode));
         }
+        //Checked before readiness. Without a motion mode the job isn't on its WAIT command either,
+        //and that would hide the actual cause. start_traj_mode reports any other readiness problem.
+        else if (!bMotionModeOk)
+        {
+            motomanErrorCode = INIT_TRAJ_WRONG_MODE;
+            rosidl_runtime_c__String__assign(&fjt_result_response.result.error_string,
+                Ros_ErrorHandling_Init_Trajectory_Status_ToString((Init_Trajectory_Status) motomanErrorCode));
+        }
         else if (!bMotionReady)
         {
             motomanErrorCode = Ros_Controller_GetNotReadySubcode(false);
             rosidl_runtime_c__String__assign(&fjt_result_response.result.error_string,
                 Ros_ErrorHandling_MotionNotReadyCode_ToString((MotionNotReadyCode)motomanErrorCode));
-        }
-        else if (!bMotionModeOk)
-        {
-            motomanErrorCode = INIT_TRAJ_WRONG_MODE;
-            rosidl_runtime_c__String__assign(&fjt_result_response.result.error_string, 
-                Ros_ErrorHandling_Init_Trajectory_Status_ToString((Init_Trajectory_Status) motomanErrorCode));
         }
         else if (!bInitOk)
         {

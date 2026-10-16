@@ -14,6 +14,13 @@ MotoROS2 is now built against `micro_ros_motoplus` version TODO
 New functionality:
 
 - Add new motion mode for real-time control of the robot. This pipes the user commands directly to the motion API with minimal overhead. ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
+- The real-time mode is started with the new `start_rt_mode` service, which can also return the new result codes `NOT_READY_INVALID_SELECTION` (`119`) and `NOT_READY_ALREADY_ACTIVE` (`120`). This requires a version of `motoros2_interfaces` which includes `StartRtMode`, `ControlModeEnum` and `JointOrderEnum` ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
+
+Changes:
+
+- When the micro-ROS Agent disconnects, the active motion mode (trajectory, point-queue or real-time) is ended. After it reconnects, the client must call `start_traj_mode`, `start_point_queue_mode` or `start_rt_mode` again ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
+- `start_traj_mode` and `start_point_queue_mode` no longer report success without activating the motion mode when the INFORM job is already waiting for motion (ex: after it was started from the teach pendant). The job is restarted instead ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
+- A `FollowJointTrajectory` goal sent while trajectory mode is not active is now always aborted with `INIT_TRAJ_WRONG_MODE` (`error_code` `-100209`, "Must call start_traj_mode service"). Previously a 'not ready' code was returned instead if the robot was also not ready for motion (ex: "INFORM job is not on a WAIT command" after the micro-ROS Agent reconnected) ([#449](https://github.com/Yaskawa-Global/motoros2/pull/449))
 
 ## 0.2.1 (2025-06-26)
 

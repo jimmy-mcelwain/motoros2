@@ -349,7 +349,7 @@ If either fragment is lost, the whole reply is lost.
 ## Deactivation
 
 Other motion modes may not be used at the same time as an R/T session.
-The service to start those modes will fail when invoked.
+Starting one fails, and the session goes on: `start_traj_mode` and `start_point_queue_mode` return `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, and a `FollowJointTrajectory` goal is aborted with `INIT_TRAJ_WRONG_MODE` (`error_code` `-100209`).
 Calling `stop_traj_mode` ends the session (the final reply has `endReason` `StopRequested`).
 At that time, another motion mode may be used.
 The UDP port stays open, so a new session can be started with `start_rt_mode`.
