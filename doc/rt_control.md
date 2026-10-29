@@ -59,6 +59,7 @@ The session is also dropped if:
 - a command is received from an IP address other than the one which sent the first valid command (that host owns the session)
 - the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
 - an increment is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
+- a `toolIndex` is not `0` - `63`
 - the robot rejects the increment (ex: E-stop, HOLD, alarm, PFL, servo power off)
 - `stop_traj_mode` is called, or the micro-ROS agent disconnects
 
@@ -293,7 +294,7 @@ enum EndReason
     InvalidPacketType,    //endDetail: the packetType received
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     SequenceGap,          //endDetail: the sequenceId received
-    InvalidIncrement,     //Not a finite number, not a unit quaternion, or exceeds a speed limit
+    InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
     MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
     InternalError,        //See debug log
 }

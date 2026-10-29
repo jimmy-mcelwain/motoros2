@@ -46,6 +46,10 @@ static int sockRtCommandListener = -1;
 static LONG prevRtCmdPosition[MAX_GROUPS][MAX_AXES];
 static LONG howMuchShouldIHaveMoved[MAX_GROUPS][MAX_AXES];
 
+//Cartesian mode: the tool which prevRtCmdPosition was read with (-1 = not read yet).
+//A TCP pose is only comparable with another pose of the same tool.
+static int rtDeviationCheckTool[MAX_GROUPS];
+
 //The motion API only accepts whole units (pulse, micrometer, 0.0001 degree). The fraction
 //of a unit which was commanded but not sent is carried over to the next cycle. Otherwise the
 //truncation would accumulate into a steady drift when streaming small increments.
@@ -432,26 +436,19 @@ void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
 bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
 {
     int i;
-    MP_CARTPOS_EX_SEND_DATA cartSendData;
-    MP_CART_POS_RSP_DATA_EX cartRespData;
-    MP_GET_TOOL_NO_RSP_DATA getToolResp;
 
     bzero(moveData, sizeof(MP_EXPOS_DATA));
 
     moveData->m_ctrl_grp = 0;
     moveData->s_ctrl_grp = 0;
-    
+
     for (i = 0; i < g_Ros_Controller.numGroup; i++)
     {
         CtrlGroup* group = g_Ros_Controller.ctrlGroups[i];
 
-        if (Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
-            cartSendData.sFrame = 1; //1 = RF
         //TODO: Test on an actual track. I don't think you can get the cartesian of the track alone.
         //      I think that you can only get robot position, but in Base Frame.
-//        else if (Ros_CtrlGroup_IsBase(group)) //is a base track
-//            cartSendData.sFrame = 0; //0 = BF
-        else
+        if (!Ros_CtrlGroup_IsRobot(group)) //is an external axis
         {
             Ros_Debug_BroadcastMsg("ERROR: Group [%d] is an external positioner. Cartesian control mode is not supported for this group.", i);
             return false;
@@ -461,17 +458,8 @@ bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
         moveData->grp_pos_info[i].pos_tag.data[0] = Ros_CtrlGroup_GetAxisConfig(g_Ros_Controller.ctrlGroups[i]);
         moveData->grp_pos_info[i].pos_tag.data[3] = MP_INC_RF_DTYPE;
 
-        //NOTE: This isn't the best method for this. During testing, I had tool #2 selected
-        //      on the pendant, but I was commanding increments on tool #0. Because of this,
-        //      the first motion on each axis would trigger the FSU detection mechanism. But
-        //      it immediately recovers after one cycle.
-        mpGetToolNo(group->groupId, &getToolResp);
-
-        cartSendData.sRobotNo = i;
-
-        cartSendData.sToolNo = getToolResp.sToolNo;
-        mpGetCartPosEx(&cartSendData, &cartRespData);
-        memcpy(prevRtCmdPosition[i], cartRespData.lPos, sizeof(LONG) * MAX_AXES);
+        //The starting pose is read on the first command, with the tool that command selects.
+        rtDeviationCheckTool[i] = -1;
     }
 
     return true;
@@ -493,6 +481,16 @@ static LONG Ros_RtMotionControl_TakeWholeUnits(double increment, double* residua
     return whole;
 }
 
+static bool Ros_RtMotionControl_IsValidTool(int groupNo, int toolIndex)
+{
+    if (toolIndex < 0 || toolIndex > MAX_VALID_TOOL_INDEX)
+    {
+        Ros_Debug_BroadcastMsg("ERROR: Group [%d] Tool [%d] is invalid (must be 0 - %d)", groupNo, toolIndex, MAX_VALID_TOOL_INDEX);
+        return false;
+    }
+    return true;
+}
+
 bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     int axis, groupNo;
@@ -505,6 +503,9 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
         CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
+
+        if (!Ros_RtMotionControl_IsValidTool(groupNo, incomingCommand->toolIndex[groupNo]))
+            return false;
 
         //joints must be in moto-order
         if (sessionJointOrder == motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES)
@@ -592,6 +593,9 @@ bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
         delta = incomingCommand->delta[groupNo];
+
+        if (!Ros_RtMotionControl_IsValidTool(groupNo, incomingCommand->toolIndex[groupNo]))
+            return false;
 
         moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
 
@@ -840,7 +844,20 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
         {
             cartSendData.sRobotNo = groupIndex;
             cartSendData.sFrame = 1; //1 = RF
-            cartSendData.sToolNo = tools[groupIndex];
+
+            if (rtDeviationCheckTool[groupIndex] < 0)
+            {
+                //First command. Nothing has been commanded yet, so there is nothing to check.
+                //Read the starting pose with the tool this command uses.
+                cartSendData.sToolNo = tools[groupIndex];
+                mpGetCartPosEx(&cartSendData, &cartRespData);
+                memcpy(prevRtCmdPosition[groupIndex], cartRespData.lPos, sizeof(LONG) * MAX_AXES);
+                rtDeviationCheckTool[groupIndex] = tools[groupIndex];
+                continue;
+            }
+
+            //Check the previous increment with the tool it was commanded with
+            cartSendData.sToolNo = rtDeviationCheckTool[groupIndex];
             mpGetCartPosEx(&cartSendData, &cartRespData);
         }
 
@@ -901,6 +918,16 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
                 difference = howMuchShouldIHaveMoved[groupIndex][6] - howMuchDidIActuallyMove[6];
                 if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
                     returnValue = TRUE;
+            }
+
+            if (tools[groupIndex] != rtDeviationCheckTool[groupIndex])
+            {
+                //This command changes the tool. Re-read the pose with the new tool, so the
+                //next cycle checks this command's increment against the same TCP.
+                cartSendData.sToolNo = tools[groupIndex];
+                mpGetCartPosEx(&cartSendData, &cartRespData);
+                memcpy(prevRtCmdPosition[groupIndex], cartRespData.lPos, sizeof(LONG) * MAX_AXES);
+                rtDeviationCheckTool[groupIndex] = tools[groupIndex];
             }
         }
     }

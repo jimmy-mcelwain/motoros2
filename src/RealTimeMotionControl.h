@@ -41,7 +41,7 @@ typedef enum
     EndReason_InvalidPacketType,    //endDetail: the packetType received
     EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     EndReason_SequenceGap,          //endDetail: the sequenceId received
-    EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, or exceeds a speed limit. See debug log.
+    EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
     EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
     EndReason_InternalError,        //See debug log
 } EndReason;
