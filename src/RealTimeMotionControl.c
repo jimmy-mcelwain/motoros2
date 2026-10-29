@@ -23,6 +23,8 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
 bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
+static UINT32 Ros_RtMotionControl_WaitForStopCause();
+static BOOL Ros_RtMotionControl_IsJobRunning();
 static int Ros_RtMotionControl_WaitForPacket();
 static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to);
 
@@ -30,6 +32,17 @@ static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Qu
 #define RT_STOP_POLL_PERIOD_MS      100
 //How long to wait for the R/T task to exit on its own before it gets deleted
 #define RT_STOP_WAIT_TIMEOUT_MS     1000
+//How long to wait for the cause of a rejected increment to appear in the robot's status
+#define RT_STOP_CAUSE_WAIT_MS       200
+//The pendant modes the session requires. Like Ros_Controller_GetNotReadySubcode, REMOTE mode is not
+//required in DUMMY_SERVO_MODE builds.
+#ifndef DUMMY_SERVO_MODE
+#define RT_REQUIRED_MODES           (RobotStatus_PlayMode | RobotStatus_RemoteMode)
+#else
+#define RT_REQUIRED_MODES           (RobotStatus_PlayMode)
+#endif
+//The status bits which show that the robot stopped
+#define RT_STOPPED_STATUS           (RobotStatus_EStopped | RobotStatus_Hold | RobotStatus_Alarm | RobotStatus_PflActive)
 
 //The session ends when the task leaves its command loop. The task then still sends the final
 //reply and writes its log, so it keeps running for a short time after the session has ended.
@@ -260,6 +273,22 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             //command, so it doesn't delay the reply.
             robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
+            //The controller doesn't always reject the increment when the robot stops. (ex: On
+            //HOLD, it can accept the increment and hold the job anyway. It then accepts every
+            //increment and ignores it, even after HOLD is released.) So the session also ends
+            //when the status shows a stop, or the job isn't running. (PFL can stop the robot while the
+            //job stays on its WAIT.)
+            //The controller keeps executing increments after the pendant leaves REMOTE mode, but
+            //MotoROS2 only allows motion in REMOTE mode. So the session ends then too.
+            if ((robotStatus & RT_STOPPED_STATUS) ||
+                ((robotStatus & RT_REQUIRED_MODES) != RT_REQUIRED_MODES) || !Ros_RtMotionControl_IsJobRunning())
+            {
+                Ros_Debug_BroadcastMsg("WARN: The robot stopped or left PLAY/REMOTE mode, but mpExRcsIncrementMove accepted the increment (status 0x%02X)", robotStatus);
+                endReason = EndReason_MotionRejected;
+                endDetail = 0;
+                break; //drop the connection
+            }
+
             //track how big the increment SHOULD have been
             //we'll compare next cycle to see what actually happened
             bzero(howMuchShouldIHaveMoved, MAX_GROUPS * MAX_AXES * sizeof(LONG));
@@ -314,7 +343,10 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         outgoingReply.replyType = ReplyType_SessionEnded;
         outgoingReply.endReason = endReason;
         outgoingReply.endDetail = endDetail;
-        outgoingReply.robotStatus = Ros_RtMotionControl_ReadRobotStatus();
+        if (endReason == EndReason_MotionRejected)
+            outgoingReply.robotStatus = Ros_RtMotionControl_WaitForStopCause();
+        else
+            outgoingReply.robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
         mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)endDestination, sizeof(struct sockaddr_in));
     }
@@ -1017,4 +1049,42 @@ static UINT32 Ros_RtMotionControl_ReadRobotStatus()
         status |= RobotStatus_PflActive;
 
     return status;
+}
+
+//The motion API rejects an increment before the controller's status signals show why.
+//(ex: HOLD takes a few cycles to appear.) Motion was accepted on the previous
+//cycle, so none of the causes were present then. Read the status each cycle until one
+//appears, so the final reply can report it.
+//
+//Returns the status. If no cause appears in time, returns the status as it is.
+static UINT32 Ros_RtMotionControl_WaitForStopCause()
+{
+    //The same causes as Ros_RtMotionControl_CheckStatus, and an error, which can also explain
+    //why an increment was rejected
+    const UINT32 stopCauses = RT_STOPPED_STATUS | RobotStatus_Error;
+    const UINT32 requiredForMotion = RobotStatus_DrivesPowered | RT_REQUIRED_MODES;
+    UINT32 status = Ros_RtMotionControl_ReadRobotStatus();
+    int waited_ms = 0;
+
+    while (!(status & stopCauses) && ((status & requiredForMotion) == requiredForMotion) &&
+           waited_ms < RT_STOP_CAUSE_WAIT_MS && !bRtStopRequested)
+    {
+        mpClkAnnounce(MP_INTERPOLATION_CLK);
+        waited_ms += g_Ros_Controller.interpolPeriod;
+        status = Ros_RtMotionControl_ReadRobotStatus();
+    }
+
+    return status;
+}
+
+//Returns whether the robot job is running (not held or stopped). If the signal can't be read,
+//returns TRUE, so a read error doesn't end the session.
+static BOOL Ros_RtMotionControl_IsJobRunning()
+{
+    USHORT operating = 0;
+
+    if (mpReadIO(&g_Ros_Controller.ioStatusAddr[IO_ROBOTSTATUS_OPERATING], &operating, 1) != 0)
+        return TRUE;
+
+    return (operating != 0);
 }
