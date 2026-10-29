@@ -21,6 +21,7 @@ The user must specify the `control_mode` to indicate whether the increments will
 Cartesian mode is only supported when every control group is a robot (no positioners or base tracks).
 
 While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)`, and the session continues.
+If the robot isn't ready for motion at that moment for a reason `start_rt_mode` can't fix itself (ex: the `Error` bit is set, which doesn't end the session, see [Robot status](#robot-status)), it is rejected with that reason instead (ex: `NOT_READY_ERROR`), and the session continues as well.
 To start a new session (ex: after the client was restarted, or with other settings), call `stop_traj_mode` first.
 Once a session has ended (ex: after a timeout), calling `start_rt_mode` alone starts a new one.
 
@@ -295,7 +296,7 @@ enum EndReason
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     SequenceGap,          //endDetail: the sequenceId received
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
-    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
+    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     InternalError,        //See debug log
 }
 ```
@@ -316,8 +317,15 @@ enum RobotStatusBits
 }
 ```
 
-While a session is active, the robot is necessarily powered, in REMOTE mode, and free of E-stops, alarms and errors.
+While a session is active, the robot is necessarily powered, in REMOTE mode, and free of E-stops and alarms (the session ends otherwise, see below).
+An error (ex: a wrong password entered on the pendant) sets `Error`, but doesn't stop the robot, so the session goes on.
 These bits are most useful in the `SessionEnded` reply, to determine why the robot rejected motion (`MotionRejected`).
+The controller doesn't always reject the motion when the robot stops: on HOLD, `mpExRcsIncrementMove` can keep returning OK while the job is held, so every increment is accepted but not executed, even after HOLD is released (the job stays held).
+So the session also ends with `MotionRejected` (`endDetail` `0`) when the status shows an E-stop, HOLD, an alarm or PFL, or the job is no longer running.
+It also ends this way when the pendant leaves REMOTE mode (ex: it is switched to PLAY or TEACH): in PLAY mode, the controller keeps executing the increments, but MotoROS2 only allows motion in REMOTE mode.
+The controller rejects the motion before its status shows why (ex: HOLD can take a few cycles to appear).
+So after `MotionRejected`, the final reply waits until the cause appears in the status, for up to 200 milliseconds.
+After an E-stop, the final reply can still show `DrivesPowered`: the controller stops the robot first, and switches the servo power off a moment later (about 0.5 seconds on a GP12).
 For complete controller status (ex: alarm codes), use the [robot_status](ros_api.md#robot_status) topic.
 
 If the session ends before any command has been executed, the final reply is only sent if a packet was rejected, and it is sent to the host which sent that packet.

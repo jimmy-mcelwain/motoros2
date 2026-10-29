@@ -42,7 +42,7 @@ typedef enum
     EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     EndReason_SequenceGap,          //endDetail: the sequenceId received
     EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
-    EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove (ex: E-stop, HOLD, alarm, PFL)
+    EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     EndReason_InternalError,        //See debug log
 } EndReason;
 
