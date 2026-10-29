@@ -185,6 +185,14 @@ The Cartesian limits don't limit the joint speeds: MotoROS2 only checks those in
 A Cartesian command within the limits can still need a joint faster than its maximum speed (ex: a fast rotation of the tool, or an elbow angle step of more than about one degree per 8 ms cycle on a seven axis robot).
 The controller then either executes it anyway (without setting `motionDeviationDetected`), or stops the robot with an alarm (ex: `4414`), and the session ends with `MotionRejected`.
 
+Near a singularity, a small Cartesian increment can require very fast joint motion.
+The controller may then not execute the increment as sent.
+For example, on a six axis robot near the wrist singularity, it can hold a wrist joint still and execute only the part of the increment which doesn't need that joint: a translation is still carried out, but the orientation of the tool changes, and a rotation which needs that joint is dropped.
+The teach pendant's Cartesian jog behaves the same way.
+Where this happens depends on the robot and the controller.
+`mpExRcsIncrementMove` still succeeds, the session continues, and no alarm is raised: only the commanded position in the reply, and the `motionDeviationDetected` flag, show it.
+Stop, or move away from the singularity, when the flag is set, or use joint mode near singularities.
+
 See `CartesianIndices` enum.
 
 ```c
@@ -211,9 +219,11 @@ The reply packet is a *packed* `RtReply` structure.
 This will echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
 
 Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increment of the **previous** command cycle as sent.
-Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity.
+Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity (see above).
 The motion continues, but not as commanded.
 Compare the commanded position in the reply with the expected one to see what happened.
+The flag is set if any control group deviates: compare each group's row to see which one did.
+When the FSU (or anything else) stops the robot, the session ends with `MotionRejected` instead (the flag may still be set in the last few cycles before that).
 How far the motion may differ before the flag is set is configured with `rt_motion_deviation_threshold_pulses` (joint mode), and `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` (Cartesian mode) in the configuration file.
 In joint mode, the increments are sent in whole pulses, so the commanded position only differs from the expected one when the controller didn't execute them as sent.
 The joint mode threshold is therefore `0` by default: any difference sets the flag.
