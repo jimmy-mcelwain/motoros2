@@ -323,22 +323,30 @@ publisher_qos:
 #debug_broadcast_port: USER_LAN1
 
 #-----------------------------------------------------------------------------
-# For the real time motion interface, which port should the UDP messages
-# be transmitted on?
+# For the real time motion interface, which UDP port should MotoROS2 listen
+# on for command packets? The replies are sent from this port.
+#
+# The port must not already be in use on the controller. A value which isn't a
+# port number (1 - 65535) raises alarm 8013[21], and the default is used.
 #
 # DEFAULT: 22000
 #rt_listener_udp_port_number: 22000
 
 #-----------------------------------------------------------------------------
 # Timeout for real time motion commands. If a command packet is not received
-# within this number of milliseconds, the motion mode will be cancelled. This
-# applies to all packets within R/T session.
+# within this number of milliseconds, the R/T session ends, and start_rt_mode
+# must be called again. This applies to every command, including the first one
+# after start_rt_mode.
 #
 # Additionally, if the client does not receive a reply packet within this
-# amount of time, then it should be assumed that the session is dead.
+# amount of time (unless it is '-1'), then it should be assumed that the
+# session is dead.
 #
 # Setting this to '-1' will never timeout. In that case, you must explicitly
-# call '/stop_traj_mode' to stop the motion mode.
+# call '/stop_traj_mode' to end the session.
+#
+# Must be '-1' or greater than 0. Otherwise an alarm is raised and the
+# default is used.
 #
 # DEFAULT: 5000 (5.000 seconds)
 #timeout_for_rt_msg: 5000
@@ -348,9 +356,11 @@ publisher_qos:
 # the sequence ID. If too many packets are lost during communication, then it
 # will be assumed that the PC is not in sync with the robot.
 #
-# If the sequence ID of an incoming packet is different from the previous
-# command by a value greater than this, then the connection will be dropped.
-# The motion mode must be reactivated to be used again.
+# If the sequence ID of an incoming packet is ahead of the previous command by
+# more than this, then the session ends, and start_rt_mode must be called
+# again. (An older or repeated sequence ID gets the latest reply again.)
+#
+# Must be at least 1. Otherwise an alarm is raised and the default is used.
 #
 # DEFAULT: 3
 #max_sequence_diff_for_rt_msg: 3
@@ -374,6 +384,8 @@ publisher_qos:
 # rt_motion_deviation_threshold_deg_0001: TCP rotation angle, and the elbow
 #   angle of 7-axis robots (Cartesian mode), in 0.0001 degrees (the unit the
 #   controller uses). Ex: 100 = 0.01 degrees.
+#
+# Must not be negative. Otherwise an alarm is raised and the default is used.
 #
 # DEFAULT: 0 pulses, 100 micrometers (0.1 mm), 100 (0.01 degrees)
 #rt_motion_deviation_threshold_pulses: 0

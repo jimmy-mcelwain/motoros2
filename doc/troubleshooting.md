@@ -1155,6 +1155,77 @@ Example: `debug_broadcast_port: USER_LAN1`.
 
 After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
 
+### Alarm: 8013[18]
+
+*Example:*
+
+```text
+ALARM 8013
+ Invalid timeout_for_rt_msg
+[18]
+```
+
+*Solution:*
+The `timeout_for_rt_msg` key in the `motoros2_config.yaml` configuration file is set to an invalid value.
+The default value (`5000`) will be used instead.
+
+It must be `-1` (never time out) or a number of milliseconds greater than `0`.
+
+After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
+
+### Alarm: 8013[19]
+
+*Example:*
+
+```text
+ALARM 8013
+ Invalid max_sequence_diff
+[19]
+```
+
+*Solution:*
+The `max_sequence_diff_for_rt_msg` key in the `motoros2_config.yaml` configuration file is set to an invalid value.
+The default value (`3`) will be used instead.
+
+It must be at least `1`.
+
+After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
+
+### Alarm: 8013[20]
+
+*Example:*
+
+```text
+ALARM 8013
+ Invalid rt_motion_deviation
+[20]
+```
+
+*Solution:*
+One of the `rt_motion_deviation_threshold_pulses`, `rt_motion_deviation_threshold_micrometers` or `rt_motion_deviation_threshold_deg_0001` keys in the `motoros2_config.yaml` configuration file is set to a negative value.
+The default value will be used instead.
+The [debug log](#debug-log-client) shows which key is invalid.
+
+After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
+
+### Alarm: 8013[21]
+
+*Example:*
+
+```text
+ALARM 8013
+ Invalid rt_listener_udp_port
+[21]
+```
+
+*Solution:*
+The `rt_listener_udp_port_number` key in the `motoros2_config.yaml` configuration file is set to an invalid value.
+The default value (`22000`) will be used instead.
+
+It must be a port number from `1` to `65535`.
+
+After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
+
 ### Alarm: 8014[0]
 
 *Example:*
