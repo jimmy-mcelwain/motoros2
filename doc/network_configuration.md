@@ -101,7 +101,7 @@ As an example of a rule that may interfere with MotoROS2 communication, `ufw den
 
 There are many ways to fix the issue if it is a firewall.
 You could create firewall rules that specifically permit the connection with higher priority than the rules that deny communication.
-For example, if the rules from the following set of commands are given high priority, they will allow for UDP connection for host PC IP address `192.168.1.15` and controller IP address `192.168.1.31` on port `8888` for ROS2 communication and on port `21789` for debug communication.
+For example, if the rules from the following set of commands are given high priority, they will allow for UDP connection for host PC IP address `192.168.1.15` and controller IP address `192.168.1.31` on port `8888` for ROS2 communication, on port `21789` for debug communication, and from port `22000` for the replies of the [real-time interface](rt_control.md) (`rt_listener_udp_port_number`).
 
 Note that this an extremely narrow set of rules that would permit communication.
 Much more concise rules could be applied.
@@ -111,7 +111,11 @@ sudo ufw allow out from 192.168.1.15 to 192.168.1.31 proto udp
 sudo ufw allow from 192.168.1.31 to 192.168.1.15 port 8888 proto udp
 sudo ufw allow from 192.168.1.31 to 192.168.1.15 port 21789 proto udp
 sudo ufw allow from 192.168.1.31 to 192.168.1.255 port 21789 proto udp
+sudo ufw allow from 192.168.1.31 port 22000 to 192.168.1.15 proto udp
 ```
+
+The replies of the real-time interface are larger than one Ethernet frame, so each one arrives as two IP fragments.
+A firewall (or any other device between the PC and the controller) must let fragmented UDP through: if it drops it, `start_rt_mode` succeeds, but the client never receives a reply (see [Wire format](rt_control.md#wire-format)).
 
 You will have to ensure that firewall rules allowing for UDP communication have higher priority than those which block communication.
 
