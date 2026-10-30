@@ -110,7 +110,7 @@ typedef enum
 #define DEFAULT_ULAN_DEBUG_BROADCAST_PORT        CFG_ROS_USER_LAN1
 #endif
 
-#define DEFAULT_RT_LISTENER_UDP_PORT_NUMBER     "22000"
+#define DEFAULT_RT_LISTENER_UDP_PORT_NUMBER     22000
 
 #define DEFAULT_TIMEOUT_FOR_RT_MSG      5000
 
@@ -166,7 +166,7 @@ typedef struct
     BOOL debug_broadcast_enabled;
     Ros_UserLan_Port_Setting debug_broadcast_port;
 
-    char rt_listener_udp_port_number[MAX_YAML_STRING_LEN];
+    int rt_listener_udp_port_number;
 
     int timeout_for_rt_msg;
     int max_sequence_diff_for_rt_msg;
