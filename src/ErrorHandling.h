@@ -36,6 +36,7 @@ typedef enum
     MOTION_NOT_READY_ECO_MODE = motoros2_interfaces__msg__MotionReadyEnum__NOT_READY_ECO_MODE,
     MOTION_NOT_READY_SERVO_ON_TIMEOUT = motoros2_interfaces__msg__MotionReadyEnum__NOT_READY_SERVO_ON_TIMEOUT,
     MOTION_NOT_READY_INVALID_SELECTION = motoros2_interfaces__msg__MotionReadyEnum__NOT_READY_INVALID_SELECTION,
+    MOTION_NOT_READY_ALREADY_ACTIVE = motoros2_interfaces__msg__MotionReadyEnum__NOT_READY_ALREADY_ACTIVE,
 } MotionNotReadyCode;
 
 typedef enum

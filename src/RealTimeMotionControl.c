@@ -30,7 +30,10 @@ static int Ros_RtMotionControl_WaitForPacket();
 //How long to wait for the R/T task to exit on its own before it gets deleted
 #define RT_STOP_WAIT_TIMEOUT_MS     1000
 
+//The session ends when the task leaves its command loop. The task then still sends the final
+//reply and writes its log, so it keeps running for a short time after the session has ended.
 static volatile BOOL bRtSessionRunning = FALSE;
+static volatile BOOL bRtTaskRunning = FALSE;
 static volatile BOOL bRtStopRequested = FALSE;
 
 static int sockRtCommandListener = -1;
@@ -83,6 +86,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         if (!Ros_RtMotionControl_InitCartesian(&moveData))
         {
             bRtSessionRunning = FALSE;
+            bRtTaskRunning = FALSE;
             return; //abort rt session
         }
     }
@@ -280,6 +284,11 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     }
 
     //=========================================================================================
+    //The session ends here, before the client is told. A client may call start_rt_mode as soon
+    //as it gets the final reply, and that must not be rejected because this task hasn't
+    //returned yet. (start_rt_mode waits for it. See Ros_RtMotionControl_StopSession.)
+    bRtSessionRunning = FALSE;
+
     //Tell the client why the session ended, so it doesn't have to wait for a timeout.
     //Once there is a commander, only it is told. (client_addr may belong to another sender.)
     //Before that, only the sender of a rejected first packet is told.
@@ -303,7 +312,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     Ros_Debug_BroadcastMsg("Ending Rt Session (reason: %d)", endReason);
 
     //must be last, as Ros_RtMotionControl_StopSession waits for this
-    bRtSessionRunning = FALSE;
+    bRtTaskRunning = FALSE;
 }
 
 //Waits for a command packet to arrive, while periodically checking whether
@@ -351,8 +360,11 @@ void Ros_RtMotionControl_PrepareSession()
 {
     bRtStopRequested = FALSE;
     bRtSessionRunning = TRUE;
+    bRtTaskRunning = TRUE;
 }
 
+//FALSE as soon as the session has ended. Its task may not have returned yet:
+//Ros_RtMotionControl_StopSession waits for that.
 BOOL Ros_RtMotionControl_IsSessionRunning()
 {
     return bRtSessionRunning;
@@ -366,16 +378,17 @@ BOOL Ros_RtMotionControl_StopSession()
 
     bRtStopRequested = TRUE;
 
-    for (waited_ms = 0; bRtSessionRunning && waited_ms < RT_STOP_WAIT_TIMEOUT_MS; waited_ms += 10)
+    for (waited_ms = 0; bRtTaskRunning && waited_ms < RT_STOP_WAIT_TIMEOUT_MS; waited_ms += 10)
         Ros_Sleep(10);
 
-    return !bRtSessionRunning;
+    return !bRtTaskRunning;
 }
 
 //Called after the R/T task has been forcibly deleted, or could not be created
 void Ros_RtMotionControl_AbortSession()
 {
     bRtSessionRunning = FALSE;
+    bRtTaskRunning = FALSE;
 }
 
 

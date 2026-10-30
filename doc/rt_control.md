@@ -20,6 +20,10 @@ This control mode is activated using the [start_rt_mode](ros_api.md#start_rt_mod
 The user must specify the `control_mode` to indicate whether the increments will be joint offsets (radians) or cartesian TCP offsets (meters / quaternion).
 Cartesian mode is only supported when every control group is a robot (no positioners or base tracks).
 
+While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)`, and the session continues.
+To start a new session (ex: after the client was restarted, or with other settings), call `stop_traj_mode` first.
+Once a session has ended (ex: after a timeout), calling `start_rt_mode` alone starts a new one.
+
 If this service is successful, it will return a `result_code` of `Ready (1)`.
 Otherwise, please examine the `result_code` and `message` fields in the response for more information.
 
@@ -46,7 +50,6 @@ So send the next command as soon as possible after the reply.
 If it arrives late, the robot does not move during that cycle.
 
 If a command is not received within `timeout_for_rt_msg` (default: 5 seconds; `-1`: never), then the session times out and is dropped.
-At that point, a new session must be started by calling `start_rt_mode` again.
 A "keep-alive" can be used by sending a command with zero increments.
 
 The session is also dropped if:
@@ -67,6 +70,7 @@ So make sure that no other host sends packets to the R/T port while a session is
 When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why.
 See [Session end](#session-end).
 More detail is printed to the debug log.
+A new session can be started as soon as the final reply has been received.
 
 MotoROS2 doesn't decelerate the robot: when commands stop arriving, or the session ends, no more motion is sent.
 So bring the robot to rest before ending a session (ex: before calling `stop_traj_mode`).

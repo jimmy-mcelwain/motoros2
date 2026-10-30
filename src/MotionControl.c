@@ -1353,7 +1353,8 @@ static BOOL Ros_MotionControl_IsInterpolationTaskRunning()
     if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
         return FALSE;
 
-    //The R/T task ends on its own (timeout, error, etc.)
+    //The R/T session ends on its own (timeout, error, etc.). Its task may then still be
+    //finishing up: Ros_MotionControl_StopInterpolationTask waits for it.
     if (Ros_MotionControl_IsRtMode(Ros_MotionControl_InterpolationTaskMode))
         return Ros_RtMotionControl_IsSessionRunning();
 
@@ -1483,6 +1484,17 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
     // Check if already in the proper mode
     if (Ros_Controller_IsMotionReady() && Ros_MotionControl_ActiveMotionMode != MOTION_MODE_INACTIVE)
     {
+        //A running R/T session isn't interrupted, as the other modes aren't. start_rt_mode can't
+        //continue it either: the request may select other settings, and a new client begins
+        //again at sequenceId 0, which the session would treat as old packets. The client must
+        //call stop_traj_mode first. (Calling start_traj_mode or start_point_queue_mode again
+        //changes nothing, so it succeeds.)
+        if (Ros_MotionControl_IsRtMode(mode) && Ros_MotionControl_IsInterpolationTaskRunning())
+        {
+            Ros_Debug_BroadcastMsg("An R/T session is already running");
+            return MOTION_NOT_READY_ALREADY_ACTIVE;
+        }
+
         //The interpolation task may have ended (ex: R/T session timed out) or been
         //deleted (ex: agent disconnected), even though the job is still running.
         if (!Ros_MotionControl_IsInterpolationTaskRunning() && !Ros_MotionControl_StartInterpolationTask(mode))
