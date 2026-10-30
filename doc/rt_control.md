@@ -20,18 +20,18 @@ This control mode is activated using the [start_rt_mode](ros_api.md#start_rt_mod
 The user must specify the `control_mode` to indicate whether the increments will be joint offsets (radians) or cartesian TCP offsets (meters / quaternion).
 Cartesian mode is only supported when every control group is a robot (no positioners or base tracks).
 
-While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)`, and the session continues.
+While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)` (or `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, if it selects joint control in a Cartesian session, or the reverse), and the session continues.
 If the robot isn't ready for motion at that moment for a reason `start_rt_mode` can't fix itself (ex: the `Error` bit is set, which doesn't end the session, see [Robot status](#robot-status)), it is rejected with that reason instead (ex: `NOT_READY_ERROR`), and the session continues as well.
 To start a new session (ex: after the client was restarted, or with other settings), call `stop_traj_mode` first.
 Once a session has ended (ex: after a timeout), calling `start_rt_mode` alone starts a new one.
+Switching between joint and Cartesian control always needs `stop_traj_mode` first, even after a session has ended: otherwise `start_rt_mode` returns `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`.
 
 If this service is successful, it will return a `result_code` of `Ready (1)`.
 Otherwise, please examine the `result_code` and `message` fields in the response for more information.
 
 The service will also return a `period` in milliseconds.
 This indicates the rate at which increment commands will be expected by the robot.
-The default period for a single manipulator is 4 milliseconds.
-However, that value will increase as additional axes or manipulators are added to the system.
+It is the controller's interpolation period, which depends on the robot model and the number of control groups (ex: 4 milliseconds for a single robot on a YRC1000, 2 milliseconds for a SCARA robot on a YRC1000micro, and 8 or 16 with several control groups).
 
 ## Usage
 
@@ -82,10 +82,10 @@ A new session can be started as soon as the final reply has been received.
 
 MotoROS2 doesn't decelerate the robot: when commands stop arriving, or the session ends, no more motion is sent.
 So bring the robot to rest before ending a session (ex: before calling `stop_traj_mode`).
-The controller smooths the motion (on a GP12, the feedback trails the command by about 0.2 seconds), so the robot still slows down over a few tenths of a second, but that can still be too abrupt (ex: at high speed, or with a payload).
+The controller smooths the motion (see [Latency](#latency)), so the robot still slows down over a few tenths of a second, but that can still be too abrupt (ex: at high speed, or with a payload).
 
 The final reply is best-effort, as it is sent over UDP.
-Therefore, if the client does not receive a reply packet within `timeout_for_rt_msg` (returned by `start_rt_mode`), then it should still assume that the session is dead.
+Therefore, if the client does not receive a reply packet within `timeout_for_rt_msg` (returned by `start_rt_mode`; if it is `-1`, within a time of the client's choosing), then it should still assume that the session is dead.
 
 The motion API only accepts whole units (pulses, micrometers and 0.0001 degrees).
 Increments are rounded to the nearest whole unit, and the rest is carried over to the next cycle, so small increments are not lost.
@@ -93,6 +93,23 @@ A joint increment may exceed the joint's maximum per cycle by up to 0.001 pulse 
 It is still sent within the maximum, and the excess is sent in a later cycle.
 
 <img src="img/RtFlow.png" alt="Command Flow" />
+
+### Latency
+
+Measured on a GP12 (YRC1000, 4 millisecond `period`), with sines from 0.5 to 5 Hz and smoothed steps, on joint T and on the TCP:
+
+- The reply arrived 3.6 milliseconds after the command was sent (median, network included; 3.9 milliseconds for 99 % of the commands).
+- The commanded position in the reply already includes the command it answers.
+- The feedback position trailed the commanded position by about 0.19 seconds, at every frequency.
+- The controller smooths the motion: a step took about 0.2 seconds to rise from 10 % to 90 %, with less than 1 % overshoot.
+  Motion which changes direction faster than about 2 Hz is attenuated: the robot moved about 70 % of the commanded amplitude at 2 Hz, 35 to 40 % at 3 Hz, and almost nothing at 5 Hz.
+
+The delay and the smoothing of the feedback are the controller's behavior, not MotoROS2's, and they may differ for other robots and controllers.
+So the robot can't follow motion faster than about 2 Hz, and a control loop which uses the feedback position has to allow for about 0.2 seconds of delay.
+
+While MotoROS2 publishes (`joint_states`, `robot_status` and `tf`, every `controller_status_monitor_period`), a reply can be sent late, so the client's next command can miss its interpolation cycle, and the robot gets no increment for that cycle.
+The controller's smoothing absorbs a single missed cycle.
+On a GP12 with the default settings (`executor_sleep_period` 10, `controller_status_monitor_period` 10, `publish_tf` true), this happened about once or twice a minute; with 100 / 100 and `publish_tf: false`, about ten times less often.
 
 ### Data format (command)
 
@@ -365,13 +382,14 @@ This is the same order as the groups in `joint_states` (`group_1`, `group_2`, ..
 
 The reply is larger than the 1472 bytes of UDP data which fit in one standard Ethernet frame (MTU 1500), so it is always sent as two IP fragments.
 The command packet fits in one frame.
-Firewalls, NAT routers and other devices between the client and the controller must pass fragmented UDP: if they drop it, `start_rt_mode` succeeds, but the client never receives a reply.
+Firewalls, NAT routers and other devices between the client and the controller must pass fragmented UDP: if they drop it, `start_rt_mode` succeeds, but the client never receives a reply (see [Firewall issues](network_configuration.md#firewall-issues)).
 If either fragment is lost, the whole reply is lost.
 
 ## Deactivation
 
 Other motion modes may not be used at the same time as an R/T session.
 Starting one fails, and the session goes on: `start_traj_mode` and `start_point_queue_mode` return `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, and a `FollowJointTrajectory` goal is aborted with `INIT_TRAJ_WRONG_MODE` (`error_code` `-100209`).
+The R/T mode also stays active after a session has ended (ex: after a timeout), so they fail the same way until `stop_traj_mode` is called.
 Calling `stop_traj_mode` ends the session (the final reply has `endReason` `StopRequested`).
 At that time, another motion mode may be used.
 The UDP port stays open, so a new session can be started with `start_rt_mode`.
