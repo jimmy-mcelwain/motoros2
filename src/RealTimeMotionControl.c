@@ -15,13 +15,13 @@
 typedef char RtPacketSizeIsAsDocumented[(sizeof(RtPacket) == 620) ? 1 : -1];
 typedef char RtReplySizeIsAsDocumented[(sizeof(RtReply) == 2069) ? 1 : -1];
 
-void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
-bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
-bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
-bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
-void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
-bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
-void Ros_RtMotionControl_PurgeBufferedPackets();
+static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
+static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
+static void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static UINT32 Ros_RtMotionControl_WaitForStopCause();
 static BOOL Ros_RtMotionControl_IsJobRunning();
@@ -444,7 +444,7 @@ void Ros_RtMotionControl_AbortSession()
 }
 
 
-void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
+static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
 {
     int i;
     MP_CTRL_GRP_SEND_DATA ctrlGroup;
@@ -459,13 +459,13 @@ void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
         moveData->grp_pos_info[i].pos_tag.data[3] = MP_INC_PULSE_DTYPE;
 
 
-        ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[i]->groupId;;
+        ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[i]->groupId;
         mpGetPulsePos(&ctrlGroup, &cmdPulse);
         memcpy(prevRtCmdPosition[i], cmdPulse.lPos, sizeof(cmdPulse.lPos));
     }
 }
 
-bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
+static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
 {
     int i;
 
@@ -478,11 +478,10 @@ bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
     {
         CtrlGroup* group = g_Ros_Controller.ctrlGroups[i];
 
-        //TODO: Test on an actual track. I don't think you can get the cartesian of the track alone.
-        //      I think that you can only get robot position, but in Base Frame.
-        if (!Ros_CtrlGroup_IsRobot(group)) //is an external axis
+        //Cartesian increments only apply to robots, not to base tracks or positioners
+        if (!Ros_CtrlGroup_IsRobot(group))
         {
-            Ros_Debug_BroadcastMsg("ERROR: Group [%d] is an external positioner. Cartesian control mode is not supported for this group.", i);
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] is not a robot (ex: base track or positioner). Cartesian control mode is not supported for this group.", i);
             return false;
         }
 
@@ -523,7 +522,7 @@ static bool Ros_RtMotionControl_IsValidTool(int groupNo, int toolIndex)
     return true;
 }
 
-bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     int axis, groupNo;
     double pulsesPerUnit;
@@ -605,7 +604,7 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
 //TCP limits, this only catches client errors (ex: wrong units). The controller limits the joints.
 #define RT_MAX_ELBOW_SPEED_DEG_PER_MS   0.36
 
-bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     int groupNo;
     double* delta;
@@ -748,7 +747,7 @@ static void Ros_RtMotionControl_ToSessionJointOrder(CtrlGroup* group, double joi
     Ros_CtrlGroup_ConvertMotoJointOrderToSequentialJointOrder(group, motoOrder, joints);
 }
 
-void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
+static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
 {
     long pulsePos_moto[MAX_PULSE_AXES];
     long degrees[MP_GRP_AXES_NUM];
@@ -769,12 +768,13 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
         //================================================================================
         //FB pos
         //================================================================================
-        Ros_CtrlGroup_GetFBPulsePos(group, pulsePos_moto);
+        //If it can't be read, the joints are 0, and the Cartesian pose is left at 0
+        BOOL bFeedbackRead = Ros_CtrlGroup_GetFBPulsePos(group, pulsePos_moto);
 
         //Angles (or meters for a linear track)
         Ros_CtrlGroup_ConvertMotoUnitsToRosUnits(group, pulsePos_moto, reply->feedbackPositionJoints[groupIndex]);
 
-        if (Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
+        if (bFeedbackRead && Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
             for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
             {
@@ -805,15 +805,12 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
         //================================================================================
         //CMD pos
         //================================================================================
-        //Should this be Ros_CtrlGroup_GetPulsePosCmd?
-        //Answer: No, it should not. That should only be used when converting incoming
-        //        positional commands that contain an absolute position.
-        //        See https://github.com/Yaskawa-Global/motoros2/discussions/455
+        //Not Ros_CtrlGroup_GetPulsePosCmd. That is only for converting incoming absolute
+        //positions. See https://github.com/Yaskawa-Global/motoros2/discussions/455
+        //rad (or meter for linear track). If it can't be read, it is left at 0.
         ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
-        mpGetPulsePos(&ctrlGroup, &cmdPulse);
-
-        //rad (or meter for linear track)
-        Ros_CtrlGroup_ConvertMotoUnitsToRosUnits(group, cmdPulse.lPos, reply->previousCommandPositionJoints[groupIndex]);
+        if (mpGetPulsePos(&ctrlGroup, &cmdPulse) == OK)
+            Ros_CtrlGroup_ConvertMotoUnitsToRosUnits(group, cmdPulse.lPos, reply->previousCommandPositionJoints[groupIndex]);
 
         if (Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
@@ -843,7 +840,7 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
     }
 }
 
-bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
+static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
 {
     MP_CTRL_GRP_SEND_DATA ctrlGroup;
     MP_PULSE_POS_RSP_DATA cmdPulse;
@@ -865,10 +862,8 @@ bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
 
         if (mode == MOTION_MODE_RT_JOINT)
         {
-            //Should this be Ros_CtrlGroup_GetPulsePosCmd?
-            //Answer: No, it should not. That should only be used when converting incoming
-            //        positional commands that contain an absolute position.
-            //        See https://github.com/Yaskawa-Global/motoros2/discussions/455
+            //Not Ros_CtrlGroup_GetPulsePosCmd. That is only for converting incoming absolute
+            //positions. See https://github.com/Yaskawa-Global/motoros2/discussions/455
             ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
             mpGetPulsePos(&ctrlGroup, &cmdPulse);
         }
@@ -984,7 +979,7 @@ static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Qu
     return 2.0 * atan2(sqrt((x * x) + (y * y) + (z * z)), fabs(w));
 }
 
-void Ros_RtMotionControl_PurgeBufferedPackets()
+static void Ros_RtMotionControl_PurgeBufferedPackets()
 {
     struct fd_set fds;
     struct timeval tv;

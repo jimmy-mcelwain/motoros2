@@ -58,19 +58,8 @@ typedef enum
     RobotStatus_RemoteMode      = (1 << 7),     //Pendant is in REMOTE mode
 } RobotStatusBits;
 
-typedef enum
-{
-    Group_1 = 0,
-    Group_2,
-    Group_3,
-    Group_4,
-    Group_5,
-    Group_6,
-    Group_7,
-    Group_8,
-
-    MAX_GROUPS
-} GroupIndices;
+//The number of control groups in a packet. Unused groups are ignored.
+#define MAX_GROUPS  8
 
 typedef enum
 {
@@ -85,7 +74,7 @@ typedef enum
 
     TCP_Re,         //radians (elbow angle of 7-axis robots)
 
-    MAX_AXES //maxies
+    MAX_AXES
 } CartesianIndices;
 
 //##########################################################################
