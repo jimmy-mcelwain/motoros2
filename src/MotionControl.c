@@ -1355,7 +1355,8 @@ static BOOL Ros_MotionControl_IsInterpolationTaskRunning()
     if (g_Ros_Controller.tidIncMoveThread == INVALID_TASK)
         return FALSE;
 
-    //The R/T task ends on its own (timeout, error, etc.)
+    //The R/T session ends on its own (timeout, error, etc.). Its task may then still be
+    //finishing up: Ros_MotionControl_StopInterpolationTask waits for it.
     if (Ros_MotionControl_IsRtMode(Ros_MotionControl_InterpolationTaskMode))
         return Ros_RtMotionControl_IsSessionRunning();
 
@@ -1483,22 +1484,6 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
     }
 
     Ros_Controller_IoStatusUpdate();
-    // Check if already in the proper mode
-    if (Ros_Controller_IsMotionReady() && Ros_MotionControl_ActiveMotionMode != MOTION_MODE_INACTIVE)
-    {
-        //The interpolation task may have ended (ex: R/T session timed out) or been
-        //deleted (ex: agent disconnected), even though the job is still running.
-        if (!Ros_MotionControl_IsInterpolationTaskRunning() && !Ros_MotionControl_StartInterpolationTask(mode))
-        {
-            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: Failed to start the interpolation task",
-                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR));
-            rosidl_runtime_c__String__assign(responseMessage, output);
-            return MOTION_NOT_READY_ERROR;
-        }
-
-        Ros_Debug_BroadcastMsg("Already active");
-        return MOTION_READY;
-    }
     motion_readiness_code = Ros_Controller_GetNotReadySubcode(true);
 
     //Return with code if any of the problems are intractable
@@ -1534,7 +1519,37 @@ MotionNotReadyCode Ros_MotionControl_StartMotionMode(MOTION_MODE mode, rosidl_ru
         default: //Only here to get rid of warnings while compiling...
             ;
     }
-    if (Ros_Controller_IsOperating()) 
+
+    //A running R/T session can't be continued (the client may want other settings, and
+    //restarts at sequenceId 0) or replaced: call stop_traj_mode first. Checked before the
+    //fixes below (ex: cycle mode), which would HOLD the job in the middle of the session.
+    if (Ros_MotionControl_IsRtMode(mode) && Ros_MotionControl_IsInterpolationTaskRunning())
+    {
+        Ros_Debug_BroadcastMsg("An R/T session is already running");
+        return MOTION_NOT_READY_ALREADY_ACTIVE;
+    }
+
+    // Check if already in the proper mode
+    if (Ros_Controller_IsMotionReady() && Ros_MotionControl_ActiveMotionMode != MOTION_MODE_INACTIVE)
+    {
+        //The interpolation task may have ended (ex: R/T session timed out) or been
+        //deleted (ex: agent disconnected), even though the job is still running.
+        if (Ros_MotionControl_IsInterpolationTaskRunning())
+            Ros_Debug_BroadcastMsg("Already active");
+        else if (Ros_MotionControl_StartInterpolationTask(mode))
+            Ros_Debug_BroadcastMsg("Already active. Started a new interpolation task (ex: a new R/T session)");
+        else
+        {
+            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: Failed to start the interpolation task",
+                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR));
+            rosidl_runtime_c__String__assign(responseMessage, output);
+            return MOTION_NOT_READY_ERROR;
+        }
+
+        return MOTION_READY;
+    }
+
+    if (Ros_Controller_IsOperating())
     {
         //the current call to StarTrajMode is likely intended to get the
         //servos out of eco mode. In that case, servo power will be turned
