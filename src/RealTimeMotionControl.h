@@ -44,6 +44,7 @@ typedef enum
     EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
     EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     EndReason_InternalError,        //See debug log
+    EndReason_CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 } EndReason;
 
 typedef enum

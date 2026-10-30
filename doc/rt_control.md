@@ -51,6 +51,14 @@ That is less than one `period` after the reply, because the reply is only sent o
 So send the next command as soon as possible after the reply.
 If it arrives late, the robot does not move during that cycle.
 
+A command which is sent before the reply to the previous command would be discarded, and its increment lost.
+So the session is dropped instead (`CommandTooEarly`).
+Other packets which arrive before that reply is sent (a resend, or a packet with the wrong size or `version`) are discarded, without a reply and without ending the session.
+A packet from another IP address still ends it (`MultipleSources`).
+
+A resend of a command which was already executed (ex: because its reply was lost) is not executed again.
+Instead, the latest reply is sent again, so a client whose reply was lost can resend its command to get one.
+
 If a command is not received within `timeout_for_rt_msg` (default: 5 seconds; `-1`: never), then the session times out and is dropped.
 A "keep-alive" can be used by sending a command with zero increments.
 
@@ -58,6 +66,7 @@ The session is also dropped if:
 
 - a command has the wrong size, `version` or `packetType`
 - a command is received from an IP address other than the one which sent the first valid command (that host owns the session)
+- a command is sent before the reply to the previous command
 - the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
 - an increment is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
 - a `toolIndex` is not `0` - `63`
@@ -325,8 +334,11 @@ enum EndReason
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
     MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     InternalError,        //See debug log
+    CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 }
 ```
+
+`endDetail` is `0` for the reasons which don't list a value.
 
 ### Robot status
 

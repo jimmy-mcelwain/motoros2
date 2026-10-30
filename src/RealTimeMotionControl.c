@@ -25,6 +25,8 @@ static void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static UINT32 Ros_RtMotionControl_WaitForStopCause();
 static BOOL Ros_RtMotionControl_IsJobRunning();
+static EndReason Ros_RtMotionControl_DiscardEarlyPackets(const struct sockaddr_in* commander, UINT32 executedSequenceId, int* endDetail);
+static EndReason Ros_RtMotionControl_MultipleSources(const struct sockaddr_in* commander, const struct sockaddr_in* sender, int* endDetail);
 static int Ros_RtMotionControl_WaitForPacket();
 static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to);
 
@@ -139,13 +141,9 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
             //Only allow a single commander. A second sender means the system is misconfigured,
             //so the session is ended rather than letting two clients command the robot.
-            if (!bFirstRecv && memcmp(&client_addr.sin_addr.s_addr, &previous_client_addr.sin_addr.s_addr, sizeof(UINT32)) != 0)
+            if (!bFirstRecv && client_addr.sin_addr.s_addr != previous_client_addr.sin_addr.s_addr)
             {
-                Ros_Debug_BroadcastMsg("ERROR: Received command packets from multiple sources (0x%08X and 0x%08X)",
-                                        (UINT32)previous_client_addr.sin_addr.s_addr,
-                                        (UINT32)client_addr.sin_addr.s_addr);
-                endReason = EndReason_MultipleSources;
-                endDetail = (int)client_addr.sin_addr.s_addr;
+                endReason = Ros_RtMotionControl_MultipleSources(&previous_client_addr, &client_addr, &endDetail);
                 break; //drop the connection
             }
 
@@ -267,7 +265,15 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             outgoingReply.robotStatus = robotStatus;
             outgoingReply.motionDeviationDetected = motionDeviationDetected;
 
-            Ros_RtMotionControl_PurgeBufferedPackets(); //in case user sent multiple commands while this was sleeping
+            //Discard anything which arrived while waiting for the interpolation clock. This must
+            //happen before the reply is sent, so a client which waits for the reply can't be affected.
+            EndReason discardReason = Ros_RtMotionControl_DiscardEarlyPackets(&previous_client_addr, incomingCommand.sequenceId, &endDetail);
+            if (discardReason != EndReason_None)
+            {
+                endReason = discardReason;
+                break; //drop the connection
+            }
+
             mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
 
             //Read the status for the next reply now, while the client is computing its next
@@ -1008,6 +1014,72 @@ static void Ros_RtMotionControl_PurgeBufferedPackets()
         if (mpRecvFrom(sockRtCommandListener, (char*)&incomingCommand, sizeof(RtPacket), 0, (struct sockaddr*)&client_addr, &client_addr_len) < 0)
             break;
     }
+}
+
+//Discards the packets which arrived during the current cycle (before its reply was sent),
+//and checks whether any of them means the session must end:
+//- a packet from another IP address (MultipleSources)
+//- a newer command from the commander, which was sent without waiting for the reply.
+//  Its increment would be lost, so the client must be told. (CommandTooEarly)
+//A resend of a command which was already executed is harmless, and is ignored.
+//
+//Returns EndReason_None, or the reason the session must end (and sets endDetail).
+static EndReason Ros_RtMotionControl_DiscardEarlyPackets(const struct sockaddr_in* commander, UINT32 executedSequenceId, int* endDetail)
+{
+    struct fd_set fds;
+    struct timeval tv;
+    struct sockaddr_in client_addr;
+    int client_addr_len;
+    char receiveBuffer[sizeof(RtPacket) + 1];
+    RtPacket packet;
+    int bytes_received;
+
+    while (TRUE)
+    {
+        FD_ZERO(&fds);
+        FD_SET(sockRtCommandListener, &fds);
+
+        //no wait
+        tv.tv_usec = 0;
+        tv.tv_sec = 0;
+
+        if (mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, &tv) <= 0)
+            return EndReason_None;
+
+        client_addr_len = sizeof(client_addr);
+        bytes_received = mpRecvFrom(sockRtCommandListener, receiveBuffer, sizeof(receiveBuffer), 0, (struct sockaddr*)&client_addr, &client_addr_len);
+        if (bytes_received < 0)
+            return EndReason_None;
+
+        if (client_addr.sin_addr.s_addr != commander->sin_addr.s_addr)
+            return Ros_RtMotionControl_MultipleSources(commander, &client_addr, endDetail);
+
+        //Only a well-formed packet can be judged. Anything else is just discarded.
+        if (bytes_received != sizeof(RtPacket))
+            continue;
+        memcpy(&packet, receiveBuffer, sizeof(RtPacket));
+        if (packet.version != VERSION_REAL_TIME_INTERFACE)
+            continue;
+
+        //wraparound safe
+        if ((int32_t)(packet.sequenceId - executedSequenceId) > 0)
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Command [%u] was sent before the reply to command [%u]. Its increment would be lost.",
+                                    packet.sequenceId, executedSequenceId);
+            *endDetail = (int)packet.sequenceId;
+            return EndReason_CommandTooEarly;
+        }
+    }
+}
+
+//A packet came from another IP address than the commander's. Logs it, and returns the EndReason.
+static EndReason Ros_RtMotionControl_MultipleSources(const struct sockaddr_in* commander, const struct sockaddr_in* sender, int* endDetail)
+{
+    Ros_Debug_BroadcastMsg("ERROR: Received command packets from multiple sources (0x%08X and 0x%08X)",
+                            (UINT32)commander->sin_addr.s_addr,
+                            (UINT32)sender->sin_addr.s_addr);
+    *endDetail = (int)sender->sin_addr.s_addr;
+    return EndReason_MultipleSources;
 }
 
 //Reads the robot's state into a bitfield of RobotStatusBits
