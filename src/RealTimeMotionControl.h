@@ -161,10 +161,12 @@ struct RtReply_
     double previousCommandPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double previousCommandPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-    //Set when the controller did not execute the *previous* command
-    //cycle's increment as sent (ex: the FSU speed limit truncated it, or
-    //the controller changed it near a singularity). It does NOT indicate
-    //anything about this most recent command packet.
+    //Set when the controller did not execute the increments up to the
+    //*previous* command cycle as sent (ex: the FSU speed limit truncated
+    //them, or the controller changed them near a singularity). Small
+    //deviations add up until they pass the configured thresholds. It
+    //does NOT indicate anything about this most recent command packet.
+    //Always false in a SessionEnded reply.
     bool motionDeviationDetected;
 } PACKED;
 typedef struct RtReply_ RtReply;

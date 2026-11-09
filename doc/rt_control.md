@@ -244,9 +244,15 @@ enum CartesianIndices
 The reply packet is a *packed* `RtReply` structure.
 This will echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
 
-Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increment of the **previous** command cycle as sent.
-Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity (see above).
+Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increments up to the **previous** command cycle as sent.
+Ex: the Functional Safety Unit (FSU) speed limit truncated them, or the controller changed them near a singularity (see above).
 The motion continues, but not as commanded.
+
+MotoROS2 keeps the position the robot should be commanded to: a position read from the controller, plus every increment sent since.
+Each cycle, it compares that with the commanded position.
+So a deviation which is too small to see in a single cycle still adds up, until it passes the thresholds.
+Then the flag is set for that reply, and the comparison starts again from the commanded position.
+A steady deviation therefore sets the flag again every few cycles (every cycle, if it is larger than the thresholds per cycle).
 Compare the commanded position in the reply with the expected one to see what happened.
 The flag is set if any control group deviates: compare each group's row to see which one did.
 When the FSU (or anything else) stops the robot, the session ends with `MotionRejected` instead (the flag may still be set in the last few cycles before that).
@@ -303,10 +309,12 @@ struct RtReply
     double previousCommandPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double previousCommandPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-    //Set when the controller did not execute the *previous* command
-    //cycle's increment as sent (ex: the FSU speed limit truncated it, or
-    //the controller changed it near a singularity). It does NOT indicate
-    //anything about this most recent command packet.
+    //Set when the controller did not execute the increments up to the
+    //*previous* command cycle as sent (ex: the FSU speed limit truncated
+    //them, or the controller changed them near a singularity). Small
+    //deviations add up until they pass the configured thresholds. It
+    //does NOT indicate anything about this most recent command packet.
+    //Always false in a SessionEnded reply.
 
     bool motionDeviationDetected;
 }
