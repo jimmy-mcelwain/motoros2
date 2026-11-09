@@ -91,7 +91,17 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
         request->joint_order.value != motoros2_interfaces__msg__JointOrderEnum__MOTOMAN)
         mm = MOTION_MODE_INACTIVE; //invalid selection
 
-    if (mm == MOTION_MODE_RT_CARTESIAN && !Ros_ServiceStartRtMode_IsCartesianSupported(&response->message))
+    if (mm != MOTION_MODE_INACTIVE && !Ros_RtMotionControl_IsSocketOpen())
+    {
+        char output[MOTION_START_ERROR_MESSAGE_LENGTH];
+        snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH, "%s: The R/T port (%d) could not be opened. See alarm 8013[%d] or 8011[%d].",
+            Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_ERROR),
+            g_nodeConfigSettings.rt_listener_udp_port_number, SUBCODE_CONFIGURATION_RT_PORT_IN_USE,
+            SUBCODE_FAIL_ALLOCATE_RT_CMD_SOCKET);
+        rosidl_runtime_c__String__assign(&response->message, output);
+        response->result_code.value = MOTION_NOT_READY_ERROR;
+    }
+    else if (mm == MOTION_MODE_RT_CARTESIAN && !Ros_ServiceStartRtMode_IsCartesianSupported(&response->message))
         response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
     else if (mm != MOTION_MODE_INACTIVE)
         response->result_code.value = Ros_MotionControl_StartMotionMode(mm, &settings, &response->message);

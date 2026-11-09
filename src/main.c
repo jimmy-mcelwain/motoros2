@@ -106,11 +106,9 @@ void RosInitTask()
     Ros_Controller_SetIOState(IO_FEEDBACK_RESERVED_8, FALSE);
 
     //==================================
-    //REUSEADDR isn't working (not officially supported anyway), so
-    //I need to keep the R/T socket open forever. But I also can't
-    //open it on a subtask which will be deleted as connections come
-    //and go. So, I'm opening on the one persistent task that never
-    //ends.
+    //The R/T socket is opened once, on this task, which never ends, and it stays open while
+    //agents connect and disconnect. The tasks which come and go with a connection can't own
+    //it, and it couldn't be opened again with SO_REUSEADDR (not officially supported).
     Ros_RtMotionControl_OpenSocket();
 
     //==================================

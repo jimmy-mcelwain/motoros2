@@ -772,21 +772,9 @@ ALARM 8011
 ```
 
 *Solution:*
-Save a copy of the output of the [debug-listener script](#debug-log-client) and the `PANELBOX.LOG` from the robot's teach pendant.
-Open a new issue on the [Issue tracker](https://github.com/yaskawa-global/motoros2/issues), describe the problem and attach `PANELBOX.LOG` and the debug log to the issue.
-Include a verbatim copy of the alarm text as seen on the teach pendant (alarm number and `[subcode]`).
+MotoROS2 could not allocate the socket for the [real-time interface](rt_control.md).
+The rest of MotoROS2 works normally, but `start_rt_mode` will be rejected.
 
-### Alarm: 8011[69]
-
-*Example:*
-
-```text
-ALARM 8011
- Failed to bind RT socket
-[69]
-```
-
-*Solution:*
 Save a copy of the output of the [debug-listener script](#debug-log-client) and the `PANELBOX.LOG` from the robot's teach pendant.
 Open a new issue on the [Issue tracker](https://github.com/yaskawa-global/motoros2/issues), describe the problem and attach `PANELBOX.LOG` and the debug log to the issue.
 Include a verbatim copy of the alarm text as seen on the teach pendant (alarm number and `[subcode]`).
@@ -1183,6 +1171,24 @@ The default value (`22000`) will be used instead.
 
 It must be a port number from `1` to `65535`.
 
+After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
+
+### Alarm: 8013[22]
+
+*Example:*
+
+```text
+ALARM 8013
+ rt_listener_udp_port in use
+[22]
+```
+
+*Solution:*
+MotoROS2 could not open the UDP port set by the `rt_listener_udp_port_number` key in the `motoros2_config.yaml` configuration file (default: `22000`).
+Most likely, another application on the controller already uses it.
+The rest of MotoROS2 works normally, but `start_rt_mode` will be rejected.
+
+Set `rt_listener_udp_port_number` to a port which is not in use.
 After correcting the configuration, the [changes will need to be propagated to the Yaskawa controller](../README.md#updating-the-configuration).
 
 ### Alarm: 8014[0]

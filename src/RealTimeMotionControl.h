@@ -14,6 +14,7 @@
 
 extern void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode);
 extern void Ros_RtMotionControl_OpenSocket();
+extern BOOL Ros_RtMotionControl_IsSocketOpen();
 extern void Ros_RtMotionControl_PrepareSession(RtSessionSettings const* settings);
 extern BOOL Ros_RtMotionControl_IsSessionRunning();
 extern BOOL Ros_RtMotionControl_StopSession();
