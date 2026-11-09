@@ -326,8 +326,10 @@ publisher_qos:
 # For the real time motion interface, which UDP port should MotoROS2 listen
 # on for command packets? The replies are sent from this port.
 #
-# The port must not already be in use on the controller. A value which isn't a
-# port number (1 - 65535) raises alarm 8013[21], and the default is used.
+# The port must not already be in use on the controller. If it can't be
+# opened, alarm 8013[22] is raised and start_rt_mode is rejected. (The rest of
+# MotoROS2 works normally.) A value which isn't a port number (1 - 65535)
+# raises alarm 8013[21], and the default is used.
 #
 # DEFAULT: 22000
 #rt_listener_udp_port_number: 22000

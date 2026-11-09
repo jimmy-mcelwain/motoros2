@@ -718,11 +718,14 @@ void Ros_RtMotionControl_OpenSocket()
 {
     struct sockaddr_in server_addr;
 
+    //Not fatal, like a failed bind below: only the R/T interface needs this socket
     sockRtCommandListener = mpSocket(AF_INET, SOCK_DGRAM, 0);
     if (sockRtCommandListener < 0)
     {
-        Ros_Debug_BroadcastMsg("ERROR: Could not allocate socket for RT interface");
-        motoRosAssert_withMsg(false, SUBCODE_FAIL_ALLOCATE_RT_CMD_SOCKET, "Failed to allocate RT socket");
+        Ros_Debug_BroadcastMsg("ERROR: Could not allocate socket for RT interface. start_rt_mode will be rejected.");
+        sockRtCommandListener = -1;
+        mpSetAlarm(ALARM_ASSERTION_FAIL, "Failed to allocate RT socket", SUBCODE_FAIL_ALLOCATE_RT_CMD_SOCKET);
+        return;
     }
 
     // Bind socket to port
@@ -731,13 +734,20 @@ void Ros_RtMotionControl_OpenSocket()
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = mpHtons(g_nodeConfigSettings.rt_listener_udp_port_number);
 
+    //Not fatal: only the R/T interface needs this port. start_rt_mode is rejected instead.
     if (mpBind(sockRtCommandListener, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0)
     {
-        Ros_Debug_BroadcastMsg("ERROR: Failed to bind UDP socket for real-time motion control");
+        Ros_Debug_BroadcastMsg("ERROR: Failed to bind UDP port %d for real-time motion control. start_rt_mode will be rejected.",
+            g_nodeConfigSettings.rt_listener_udp_port_number);
         mpClose(sockRtCommandListener);
-        sockRtCommandListener = -1; 
-        motoRosAssert_withMsg(false, SUBCODE_FAIL_BIND_RT_SOCKET, "Failed to bind RT socket");
+        sockRtCommandListener = -1;
+        mpSetAlarm(ALARM_CONFIGURATION_FAIL, "rt_listener_udp_port in use", SUBCODE_CONFIGURATION_RT_PORT_IN_USE);
     }
+}
+
+BOOL Ros_RtMotionControl_IsSocketOpen()
+{
+    return sockRtCommandListener >= 0;
 }
 
 //Converts joints from moto-order to the order requested for this session
