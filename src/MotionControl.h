@@ -31,6 +31,7 @@ typedef enum
 typedef struct
 {
     UINT16 jointOrder;  //motoros2_interfaces/msg/JointOrderEnum
+    BOOL bAbsolute;     //the packets contain positions, not increments
 } RtSessionSettings;
 
 extern Init_Trajectory_Status Ros_MotionControl_InitTrajectory(control_msgs__action__FollowJointTrajectory_SendGoal_Request* pending_ros_goal_request);

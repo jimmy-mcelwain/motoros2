@@ -377,7 +377,11 @@ publisher_qos:
 # small to see in one cycle still adds up until it passes these amounts.
 #
 # Raise these if the flag is set during motion which isn't being limited.
-# They only affect the flag, not the motion.
+# They only affect the flag, except in the CARTESIAN_ABSOLUTE mode: there,
+# MotoROS2 reads the commanded pose again when it differs from its own by more
+# than the Cartesian thresholds, so the robot can stop up to that far short of
+# the target after it was slowed down. Don't set the Cartesian thresholds
+# below the TCP motion of about one encoder pulse.
 #
 # rt_motion_deviation_threshold_pulses: per joint, in encoder pulses (joint
 #   control mode). Joint increments are sent in whole pulses, so the

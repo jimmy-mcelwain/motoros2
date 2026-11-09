@@ -15,10 +15,22 @@
 typedef char RtPacketSizeIsAsDocumented[(sizeof(RtPacket) == 620) ? 1 : -1];
 typedef char RtReplySizeIsAsDocumented[(sizeof(RtReply) == 2069) ? 1 : -1];
 
+//The packetType of a command must be the same as the control_mode of the session.
+//(Fails to compile otherwise: an array can't have a negative size.)
+typedef char RtPacketTypeMatchesControlMode[
+    (PacketType_Joint_Increments == motoros2_interfaces__msg__ControlModeEnum__JOINT_INCREMENTS &&
+     PacketType_Cart_Increments == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN_INCREMENTS &&
+     PacketType_Joint_Absolute == motoros2_interfaces__msg__ControlModeEnum__JOINT_ABSOLUTE &&
+     PacketType_Cart_Absolute == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN_ABSOLUTE) ? 1 : -1];
+
 static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static void Ros_RtMotionControl_StartAbsolute(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_ParseJointAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_ParseCartesianAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static bool Ros_RtMotionControl_AreToolsValid(RtPacket* incomingCommand);
 static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
 static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools, bool* pbDeviation);
 static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS_DATA* moveData);
@@ -57,7 +69,13 @@ static volatile BOOL bRtStopRequested = FALSE;
 //Internally, everything is in Motoman order. Set by Ros_RtMotionControl_PrepareSession.
 static UINT16 sessionJointOrder = motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES;
 
+//Whether the packets contain positions (absolute) or increments. Set like the joint order.
+static BOOL sessionAbsolute = FALSE;
+
 static int sockRtCommandListener = -1;
+
+//Joint mode: the commanded pulses, as read this cycle by the deviation check
+static LONG prevRtCmdPosition[MAX_GROUPS][MP_GRP_AXES_NUM];
 
 //The position the robot should have been commanded to: a position read from the controller,
 //plus every increment sent since. The deviation check compares it with the position read each
@@ -116,6 +134,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     //=========================================================================================
 
+    bzero(prevRtCmdPosition, sizeof(prevRtCmdPosition));
     bzero(residualIncrement, sizeof(residualIncrement));
 
     if (mode == MOTION_MODE_RT_JOINT)
@@ -184,17 +203,19 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             switch (mode)
             {
             case MOTION_MODE_RT_JOINT:
-                if (incomingCommand.packetType != PacketType_Joint_Increments)
+                if (incomingCommand.packetType != (sessionAbsolute ? PacketType_Joint_Absolute : PacketType_Joint_Increments))
                 {
                     packetTypeOK = false;
-                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Joint Increments)");
+                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (%s)",
+                        sessionAbsolute ? "Joint Absolute" : "Joint Increments");
                 }
                 break;
             case MOTION_MODE_RT_CARTESIAN:
-                if (incomingCommand.packetType != PacketType_Cart_Increments)
+                if (incomingCommand.packetType != (sessionAbsolute ? PacketType_Cart_Absolute : PacketType_Cart_Increments))
                 {
                     packetTypeOK = false;
-                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (Cartesian Increments)");
+                    Ros_Debug_BroadcastMsg("ERROR: The packet type does not match the control_mode specified in start_rt_mode (%s)",
+                        sessionAbsolute ? "Cartesian Absolute" : "Cartesian Increments");
                 }
                 break;
             default:
@@ -235,22 +256,40 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 break; // Drop the connection
             }
 
-            bool bParsedOK;
-            if (mode == MOTION_MODE_RT_JOINT)
-                bParsedOK = Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData);
-            else
-                bParsedOK = Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData);
-
-            if (!bParsedOK)
+            //The deviation check reads the pose with these tools
+            if (!Ros_RtMotionControl_AreToolsValid(&incomingCommand))
             {
                 endReason = EndReason_InvalidIncrement;
                 bEndReplyToSender = true;
                 break; //drop the connection
             }
 
+            //Check the previous increment before parsing this command. The absolute modes start
+            //from the position it reads.
             if (!Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex, &motionDeviationDetected))
             {
                 endReason = EndReason_InternalError;
+                bEndReplyToSender = true;
+                break; //drop the connection
+            }
+
+            bool bParsedOK = true;
+            if (sessionAbsolute && bFirstRecv)
+                Ros_RtMotionControl_StartAbsolute(mode, &incomingCommand, &moveData);
+            else if (mode == MOTION_MODE_RT_JOINT)
+            {
+                bParsedOK = sessionAbsolute ? Ros_RtMotionControl_ParseJointAbsolute(&incomingCommand, &moveData) :
+                                              Ros_RtMotionControl_ParseJointSpace(&incomingCommand, &moveData);
+            }
+            else
+            {
+                bParsedOK = sessionAbsolute ? Ros_RtMotionControl_ParseCartesianAbsolute(&incomingCommand, &moveData) :
+                                              Ros_RtMotionControl_ParseCartesian(&incomingCommand, &moveData);
+            }
+
+            if (!bParsedOK)
+            {
+                endReason = EndReason_InvalidIncrement;
                 bEndReplyToSender = true;
                 break; //drop the connection
             }
@@ -422,6 +461,7 @@ void Ros_RtMotionControl_PrepareSession(RtSessionSettings const* settings)
     Ros_RtMotionControl_PurgeBufferedPackets();
 
     sessionJointOrder = settings->jointOrder;
+    sessionAbsolute = settings->bAbsolute;
     bRtStopRequested = FALSE;
     bRtSessionRunning = TRUE;
     bRtTaskRunning = TRUE;
@@ -509,12 +549,17 @@ static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
 //still limited to the maximum; the excess is sent in a later cycle.
 #define RT_MAX_INCREMENT_TOLERANCE_PULSES   0.001
 
+static LONG Ros_RtMotionControl_Round(double value)
+{
+    return (LONG)((value < 0.0) ? (value - 0.5) : (value + 0.5));
+}
+
 //Converts an increment (already scaled to motoman units) to the nearest whole number of
 //units, and carries the rest (up to half a unit, either way) over to the next cycle.
 static LONG Ros_RtMotionControl_TakeWholeUnits(double increment, double* residual)
 {
     double total = increment + *residual;
-    LONG whole = (LONG)((total < 0.0) ? (total - 0.5) : (total + 0.5));
+    LONG whole = Ros_RtMotionControl_Round(total);
 
     *residual = total - whole;
     return whole;
@@ -528,20 +573,34 @@ static double Ros_RtMotionControl_ElbowDifference(double to, double from)
     return difference - 3600000.0 * floor((difference + 1800000.0) / 3600000.0);
 }
 
-static bool Ros_RtMotionControl_IsValidTool(int groupNo, int toolIndex)
+static bool Ros_RtMotionControl_AreToolsValid(RtPacket* incomingCommand)
 {
-    if (toolIndex < 0 || toolIndex > MAX_VALID_TOOL_INDEX)
+    for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
-        Ros_Debug_BroadcastMsg("ERROR: Group [%d] Tool [%d] is invalid (must be 0 - %d)", groupNo, toolIndex, MAX_VALID_TOOL_INDEX);
-        return false;
+        int toolIndex = incomingCommand->toolIndex[groupNo];
+        if (toolIndex < 0 || toolIndex > MAX_VALID_TOOL_INDEX)
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] Tool [%d] is invalid (must be 0 - %d)", groupNo, toolIndex, MAX_VALID_TOOL_INDEX);
+            return false;
+        }
     }
     return true;
+}
+
+//Pulses per radian (rotary axis) or per meter (linear axis)
+static double Ros_RtMotionControl_PulsesPerUnit(CtrlGroup* ctrlGroup, int axis)
+{
+    if (ctrlGroup->axisType.type[axis] == AXIS_ROTATION)
+        return ctrlGroup->pulseToRad.PtoR[axis];
+    else if (ctrlGroup->axisType.type[axis] == AXIS_LINEAR)
+        return ctrlGroup->pulseToMeter.PtoM[axis];
+    else
+        return 1.0;
 }
 
 static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     int axis, groupNo;
-    double pulsesPerUnit;
     double pulses;
     double motoOrderDelta[MP_GRP_AXES_NUM];
     double const* delta;
@@ -551,17 +610,14 @@ static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EX
     {
         CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
 
-        if (!Ros_RtMotionControl_IsValidTool(groupNo, incomingCommand->toolIndex[groupNo]))
-            return false;
-
         //joints must be in moto-order
         if (sessionJointOrder == motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES)
         {
-            Ros_CtrlGroup_ConvertSequentialJointOrderToMotoJointOrder(ctrlGroup, incomingCommand->delta[groupNo], motoOrderDelta);
+            Ros_CtrlGroup_ConvertSequentialJointOrderToMotoJointOrder(ctrlGroup, incomingCommand->command[groupNo], motoOrderDelta);
             delta = motoOrderDelta;
         }
         else
-            delta = incomingCommand->delta[groupNo];
+            delta = incomingCommand->command[groupNo];
 
         //Check every axis, not just the first numAxes. Some robots have gaps in their
         //axis layout. (ex: a 4-axis palletizer (SLU--T-) has 4 axes, but T is at index 5)
@@ -573,14 +629,7 @@ static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EX
                 continue;
             }
 
-            if (ctrlGroup->axisType.type[axis] == AXIS_ROTATION)
-                pulsesPerUnit = ctrlGroup->pulseToRad.PtoR[axis];
-            else if (ctrlGroup->axisType.type[axis] == AXIS_LINEAR)
-                pulsesPerUnit = ctrlGroup->pulseToMeter.PtoM[axis];
-            else
-                pulsesPerUnit = 1.0;
-
-            pulses = delta[axis] * pulsesPerUnit;
+            pulses = delta[axis] * Ros_RtMotionControl_PulsesPerUnit(ctrlGroup, axis);
 
             //Written so that NaN and infinity also fail this check
             if (!(fabs(pulses) <= ctrlGroup->maxInc.maxIncrement[axis] + RT_MAX_INCREMENT_TOLERANCE_PULSES))
@@ -616,9 +665,32 @@ static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EX
 //being silently normalized. It most likely indicates a bug in the client.
 #define RT_QUATERNION_NORM_TOLERANCE    0.01
 
+//1500 mm/sec is 1.5 mm/ms
+#define RT_MAX_TCP_SPEED_MM_PER_MS      1.5
+
+//360 deg/sec is 0.36 deg/ms (the controller's maximum TCP rotation speed)
+#define RT_MAX_TCP_ROTATION_DEG_PER_MS  0.36
+
 //No maximum speed is documented for the elbow angle, so the TCP rotation limit is used. Like the
 //TCP limits, this only catches client errors (ex: wrong units). The controller limits the joints.
 #define RT_MAX_ELBOW_SPEED_DEG_PER_MS   0.36
+
+//Normalizes q, unless its length (*pNorm) differs from 1 by more than RT_QUATERNION_NORM_TOLERANCE
+//or isn't a number. Then it returns false.
+static bool Ros_RtMotionControl_NormalizeUnitQuaternion(Quaternion* q, double* pNorm)
+{
+    double norm = sqrt((q->x * q->x) + (q->y * q->y) + (q->z * q->z) + (q->w * q->w));
+    *pNorm = norm;
+
+    if (!(fabs(norm - 1.0) <= RT_QUATERNION_NORM_TOLERANCE)) //NaN also fails this check
+        return false;
+
+    q->x /= norm;
+    q->y /= norm;
+    q->z /= norm;
+    q->w /= norm;
+    return true;
+}
 
 static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
@@ -630,19 +702,10 @@ static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXP
     double rx, ry, rz;
     Quaternion q;
 
-    // 1500 mm/sec is 1.5 mm/ms
-    const double max_speed_mm_per_ms = 1.5;
-
-    // 360 deg/sec is 0.36 deg/ms (the controller's maximum TCP rotation speed)
-    const double max_rotation_deg_per_ms = 0.36;
-
     // For each control group, convert incoming command and prepare moveData
     for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
-        delta = incomingCommand->delta[groupNo];
-
-        if (!Ros_RtMotionControl_IsValidTool(groupNo, incomingCommand->toolIndex[groupNo]))
-            return false;
+        delta = incomingCommand->command[groupNo];
 
         moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
 
@@ -653,7 +716,7 @@ static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXP
                                                pow(delta[TCP_Z], 2))); //z^2
 
         //Written so that NaN and infinity also fail this check
-        if (!(magnitude <= (max_speed_mm_per_ms * g_Ros_Controller.interpolPeriod)))
+        if (!(magnitude <= (RT_MAX_TCP_SPEED_MM_PER_MS * g_Ros_Controller.interpolPeriod)))
         {
             Ros_Debug_BroadcastMsg("ERROR: Group [%d] The increment for the TCP [%f mm] exceeds the maximum limit of 1500 mm/sec", groupNo, magnitude);
             return false;
@@ -670,28 +733,20 @@ static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXP
         q.z = delta[TCP_Qz];
         q.w = delta[TCP_Qw];
 
-        norm = sqrt((q.x * q.x) + (q.y * q.y) + (q.z * q.z) + (q.w * q.w));
-        if (norm == 0.0)
+        if (q.x == 0.0 && q.y == 0.0 && q.z == 0.0 && q.w == 0.0)
         {
             //An all-zero packet is treated as "no rotation", so a zero-filled
             //packet can be used as a keep-alive
             q.w = 1.0;
         }
-        else if (!(fabs(norm - 1.0) <= RT_QUATERNION_NORM_TOLERANCE)) //NaN also fails this check
+        else if (!Ros_RtMotionControl_NormalizeUnitQuaternion(&q, &norm))
         {
             Ros_Debug_BroadcastMsg("ERROR: Group [%d] The rotation must be a unit quaternion (length is [%f])", groupNo, norm);
             return false;
         }
-        else
-        {
-            q.x /= norm;
-            q.y /= norm;
-            q.z /= norm;
-            q.w /= norm;
-        }
 
         rotation = Ros_RtMotionControl_RotationAngle(NULL, &q) * DEGREES_PER_RAD;
-        if (rotation > (max_rotation_deg_per_ms * g_Ros_Controller.interpolPeriod))
+        if (rotation > (RT_MAX_TCP_ROTATION_DEG_PER_MS * g_Ros_Controller.interpolPeriod))
         {
             Ros_Debug_BroadcastMsg("ERROR: Group [%d] The rotation increment for the TCP [%f deg] exceeds the maximum limit of 360 deg/sec", groupNo, rotation);
             return false;
@@ -724,6 +779,36 @@ static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXP
     return true;
 }
 
+//=================================================================================================
+//Absolute control modes
+//
+//The motion API only accepts increments. So each cycle, the increment is the target minus the
+//position the robot has been commanded to. Whatever the robot didn't execute (ex: because the
+//FSU slowed it down), and any fraction of a unit which couldn't be sent, is made up by the next
+//increment, as long as the target is within one cycle's motion. Each target is absolute, so
+//nothing is lost if a packet is lost either.
+//
+//Joint: the commanded pulses are read from the controller every cycle (by the deviation check). They
+//are exact. (On hardware, the position read already includes the previous cycle's increment.)
+//
+//Cartesian: the expected pose of the deviation check is used instead: the pose read at the start,
+//plus every increment which was sent. The pose read from the controller is computed from the
+//commanded pulses, so it doesn't include the part of an increment which the controller has not
+//turned into a whole pulse yet. Sending the difference to that pose would send that part again
+//every cycle, until a joint steps a pulse too far, and then back (the robot buzzes at rest). The
+//pose is only read again when it differs from the expected pose by more than the deviation
+//thresholds, or the tool changes.
+
+//CARTESIAN_ABSOLUTE: the tool of the previous command. A command which changes the tool isn't
+//executed for that group (see Ros_RtMotionControl_ParseCartesianAbsolute).
+static int absPrevTool[MAX_GROUPS];
+
+//Rejects NaN and infinity
+static bool Ros_RtMotionControl_IsFinite(double value)
+{
+    return (value - value) == 0.0;
+}
+
 //out = a * b
 static void Ros_RtMotionControl_QuatMultiply(const Quaternion* a, const Quaternion* b, Quaternion* out)
 {
@@ -735,6 +820,196 @@ static void Ros_RtMotionControl_QuatMultiply(const Quaternion* a, const Quaterni
     result.z = a->w * b->z + a->x * b->y - a->y * b->x + a->z * b->w;
 
     *out = result;
+}
+
+//The first command of an absolute session is not executed. The client doesn't know the
+//robot's position yet. The reply to this command tells it.
+static void Ros_RtMotionControl_StartAbsolute(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+{
+    for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        //A later command which changes the tool isn't executed either
+        if (mode == MOTION_MODE_RT_CARTESIAN)
+            absPrevTool[groupNo] = incomingCommand->toolIndex[groupNo];
+
+        bzero(moveData->grp_pos_info[groupNo].pos, sizeof(moveData->grp_pos_info[groupNo].pos));
+        moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
+    }
+}
+
+static bool Ros_RtMotionControl_ParseJointAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+{
+    int axis, groupNo;
+    double increment;
+    double motoOrderTarget[MP_GRP_AXES_NUM];
+    double const* target;
+
+    for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
+
+        //The pulses the robot has been commanded to, as the deviation check read them this cycle
+        LONG const* commanded = prevRtCmdPosition[groupNo];
+
+        //joints must be in moto-order
+        if (sessionJointOrder == motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES)
+        {
+            Ros_CtrlGroup_ConvertSequentialJointOrderToMotoJointOrder(ctrlGroup, incomingCommand->command[groupNo], motoOrderTarget);
+            target = motoOrderTarget;
+        }
+        else
+            target = incomingCommand->command[groupNo];
+
+        for (axis = 0; axis < MP_GRP_AXES_NUM; axis++)
+        {
+            moveData->grp_pos_info[groupNo].pos[axis] = 0;
+            if (Ros_CtrlGroup_IsInvalidAxis(ctrlGroup, axis))
+                continue;
+
+            if (!Ros_RtMotionControl_IsFinite(target[axis]))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] Axis [%d] The target is not a finite number", groupNo, axis);
+                return false;
+            }
+
+            increment = target[axis] * Ros_RtMotionControl_PulsesPerUnit(ctrlGroup, axis) - commanded[axis];
+
+            //The target must be within one cycle's motion of the position the robot has been commanded to
+            if (!(fabs(increment) <= ctrlGroup->maxInc.maxIncrement[axis] + RT_MAX_INCREMENT_TOLERANCE_PULSES))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] Axis [%d] The target is [%f] pulse counts away, exceeding the maximum limit of [%d] pulse counts per cycle",
+                    groupNo, axis, increment, ctrlGroup->maxInc.maxIncrement[axis]);
+                return false;
+            }
+
+            moveData->grp_pos_info[groupNo].pos[axis] = Ros_RtMotionControl_Round(increment);
+        }
+
+        moveData->grp_pos_info[groupNo].pos_tag.data[2] = incomingCommand->toolIndex[groupNo];
+    }
+
+    return true;
+}
+
+static bool Ros_RtMotionControl_ParseCartesianAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+{
+    int groupNo, i;
+    double* target;
+    double translation[3];  //micrometers
+    double magnitude;       //mm
+    double norm;
+    double rotation;        //degrees
+    double elbow;           //0.0001 degrees
+    double elbowRotation;   //degrees
+    double rx, ry, rz;
+    Quaternion qTarget, qCurrentInverse, qIncrement;
+
+    const double maxTranslation = RT_MAX_TCP_SPEED_MM_PER_MS * g_Ros_Controller.interpolPeriod;
+    const double maxRotation = RT_MAX_TCP_ROTATION_DEG_PER_MS * g_Ros_Controller.interpolPeriod;
+    const double maxElbowRotation = RT_MAX_ELBOW_SPEED_DEG_PER_MS * g_Ros_Controller.interpolPeriod;
+
+    for (groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        int tool = incomingCommand->toolIndex[groupNo];
+
+        //A command which changes the tool isn't executed for this group, like the first command of
+        //a session: the client can't know where the new tool's TCP is. The deviation check has just
+        //read that pose with the new tool, and the reply reports it. The next target must be within
+        //one cycle's motion of it.
+        if (tool != absPrevTool[groupNo])
+        {
+            absPrevTool[groupNo] = tool;
+            bzero(moveData->grp_pos_info[groupNo].pos, sizeof(moveData->grp_pos_info[groupNo].pos));
+            moveData->grp_pos_info[groupNo].pos_tag.data[2] = tool;
+            continue;
+        }
+
+        target = incomingCommand->command[groupNo];
+
+        //Like unused groups, the elbow angle (the last slot) is ignored for robots which don't have one
+        const int numAxesUsed = (g_Ros_Controller.ctrlGroups[groupNo]->numAxes >= 7) ? (TCP_Re + 1) : TCP_Re;
+        for (i = 0; i < numAxesUsed; i += 1)
+        {
+            if (!Ros_RtMotionControl_IsFinite(target[i]))
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] The target [%d] is not a finite number", groupNo, i);
+                return false;
+            }
+        }
+
+        //=========================================================================================
+        //Translation
+        for (i = 0; i < 3; i += 1)
+            translation[i] = METERS_TO_MICROMETERS(target[TCP_X + i]) - expectedTranslation[groupNo][i];
+
+        magnitude = sqrt(pow(translation[0], 2) + pow(translation[1], 2) + pow(translation[2], 2)) / 1000.0;
+
+        //=========================================================================================
+        //Rotation
+        qTarget.x = target[TCP_Qx];
+        qTarget.y = target[TCP_Qy];
+        qTarget.z = target[TCP_Qz];
+        qTarget.w = target[TCP_Qw];
+
+        if (!Ros_RtMotionControl_NormalizeUnitQuaternion(&qTarget, &norm))
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The orientation must be a unit quaternion (length is [%f])", groupNo, norm);
+            return false;
+        }
+
+        //Increments are in the robot frame, so: target = increment * current
+        qCurrentInverse.x = -expectedOrientation[groupNo].x;
+        qCurrentInverse.y = -expectedOrientation[groupNo].y;
+        qCurrentInverse.z = -expectedOrientation[groupNo].z;
+        qCurrentInverse.w = expectedOrientation[groupNo].w;
+        Ros_RtMotionControl_QuatMultiply(&qTarget, &qCurrentInverse, &qIncrement);
+
+        //take the short way around
+        if (qIncrement.w < 0.0)
+        {
+            qIncrement.x = -qIncrement.x;
+            qIncrement.y = -qIncrement.y;
+            qIncrement.z = -qIncrement.z;
+            qIncrement.w = -qIncrement.w;
+        }
+
+        rotation = Ros_RtMotionControl_RotationAngle(NULL, &qIncrement) * DEGREES_PER_RAD;
+
+        //=========================================================================================
+        //Elbow angle (7-axis robots). Other robots have no elbow angle, so nothing is sent for
+        //it, whatever the controller reports in its place.
+        elbow = 0.0;
+        if (g_Ros_Controller.ctrlGroups[groupNo]->numAxes >= 7)
+            elbow = Ros_RtMotionControl_ElbowDifference(RAD_TO_DEG_0001(target[TCP_Re]), expectedElbow[groupNo]);
+        elbowRotation = fabs(elbow) / 10000.0;
+
+        //=========================================================================================
+        //The target must be within one cycle's motion of the pose the robot has been commanded to
+        if (!(magnitude <= maxTranslation && rotation <= maxRotation && elbowRotation <= maxElbowRotation))
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The target is [%f mm], [%f deg] and [%f deg] of elbow angle away, exceeding the maximum limit of 1500 mm/sec and 360 deg/sec",
+                groupNo, magnitude, rotation, elbowRotation);
+            return false;
+        }
+
+        //=========================================================================================
+        //Send whole units. What was sent is added to the expected pose after the move, and
+        //whatever is left over is made up next cycle.
+        for (i = 0; i < 3; i += 1)
+            moveData->grp_pos_info[groupNo].pos[TCP_X + i] = Ros_RtMotionControl_Round(translation[i]);
+
+        QuatConversion_GeomMsgsQuaternion_To_EulerRad(&qIncrement, &rx, &ry, &rz);
+        moveData->grp_pos_info[groupNo].pos[3] = Ros_RtMotionControl_Round(RAD_TO_DEG_0001(rx));
+        moveData->grp_pos_info[groupNo].pos[4] = Ros_RtMotionControl_Round(RAD_TO_DEG_0001(ry));
+        moveData->grp_pos_info[groupNo].pos[5] = Ros_RtMotionControl_Round(RAD_TO_DEG_0001(rz));
+
+        moveData->grp_pos_info[groupNo].pos[6] = Ros_RtMotionControl_Round(elbow);
+
+        moveData->grp_pos_info[groupNo].pos[7] = 0;
+        moveData->grp_pos_info[groupNo].pos_tag.data[2] = tool;
+    }
+
+    return true;
 }
 
 void Ros_RtMotionControl_OpenSocket()
@@ -789,14 +1064,15 @@ static void Ros_RtMotionControl_ToSessionJointOrder(CtrlGroup* group, double joi
 static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
 {
     long pulsePos_moto[MAX_PULSE_AXES];
-    long degrees[MP_GRP_AXES_NUM];
+    long anglePos_moto[MAX_PULSE_AXES];
     BITSTRING figure;
     MP_COORD coord;
     MP_CTRL_GRP_SEND_DATA ctrlGroup;
     MP_PULSE_POS_RSP_DATA cmdPulse;
+    MP_CARTPOS_EX_SEND_DATA cartSendData;
+    MP_CART_POS_RSP_DATA_EX cartRespData;
 
     bzero(reply, sizeof(RtReply));
-    bzero(degrees, sizeof(long) * MP_GRP_AXES_NUM);
 
     reply->sequenceEcho = command->sequenceId;
 
@@ -815,27 +1091,26 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
 
         if (bFeedbackRead && Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
-            for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
+            //Cart. If it can't be computed, it is left at 0. mpConvPulseToAngle also converts
+            //linear axes (ex: SCARA U-axis), which the joint positions above have in meters.
+            if (mpConvPulseToAngle(groupIndex, pulsePos_moto, anglePos_moto) == OK &&
+                mpConvAxesToCartPos(groupIndex, anglePos_moto, command->toolIndex[groupIndex], &figure, &coord) == OK)
             {
-                //if (group->axisType.type[axis] == AXIS_ROTATION)
-                    degrees[axis] = RAD_TO_DEG_0001(reply->feedbackPositionJoints[groupIndex][axis]);
+                Quaternion qFb;
+                QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(coord.rx, coord.ry, coord.rz, &qFb);
+
+                reply->feedbackPositionCartesian[groupIndex][TCP_X] = MICROMETERS_TO_METERS(coord.x);
+                reply->feedbackPositionCartesian[groupIndex][TCP_Y] = MICROMETERS_TO_METERS(coord.y);
+                reply->feedbackPositionCartesian[groupIndex][TCP_Z] = MICROMETERS_TO_METERS(coord.z);
+
+                reply->feedbackPositionCartesian[groupIndex][TCP_Qx] = qFb.x;
+                reply->feedbackPositionCartesian[groupIndex][TCP_Qy] = qFb.y;
+                reply->feedbackPositionCartesian[groupIndex][TCP_Qz] = qFb.z;
+                reply->feedbackPositionCartesian[groupIndex][TCP_Qw] = qFb.w;
+                //Other robots have no elbow angle
+                if (group->numAxes >= 7)
+                    reply->feedbackPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(coord.ex1);
             }
-
-            //Cart
-            mpConvAxesToCartPos(groupIndex, degrees, command->toolIndex[groupIndex], &figure, &coord);
-
-            Quaternion qFb;
-            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(coord.rx, coord.ry, coord.rz, &qFb);
-
-            reply->feedbackPositionCartesian[groupIndex][TCP_X] = MICROMETERS_TO_METERS(coord.x);
-            reply->feedbackPositionCartesian[groupIndex][TCP_Y] = MICROMETERS_TO_METERS(coord.y);
-            reply->feedbackPositionCartesian[groupIndex][TCP_Z] = MICROMETERS_TO_METERS(coord.z);
-
-            reply->feedbackPositionCartesian[groupIndex][TCP_Qx] = qFb.x;
-            reply->feedbackPositionCartesian[groupIndex][TCP_Qy] = qFb.y;
-            reply->feedbackPositionCartesian[groupIndex][TCP_Qz] = qFb.z;
-            reply->feedbackPositionCartesian[groupIndex][TCP_Qw] = qFb.w;
-            reply->feedbackPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(coord.ex1);
         }
 
         //after the FK, which needs moto-order
@@ -853,28 +1128,31 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
 
         if (Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
-            //deg
-            for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
-                degrees[axis] = RAD_TO_DEG_0001(reply->previousCommandPositionJoints[groupIndex][axis]);
+            //Cart. If it can't be read, it is left at 0. It is computed from whole pulses, so it
+            //can differ by about one pulse from the pose the absolute Cartesian mode keeps track
+            //of: a client which sends it back as its target can move the robot that far.
+            cartSendData.sRobotNo = groupIndex;
+            cartSendData.sFrame = 1; //1 = RF
+            cartSendData.sToolNo = command->toolIndex[groupIndex];
+            if (mpGetCartPosEx(&cartSendData, &cartRespData) == OK)
+            {
+                Quaternion qCmd;
+                QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(cartRespData.lPos[3], cartRespData.lPos[4], cartRespData.lPos[5], &qCmd);
 
-            //Cart
-            mpConvAxesToCartPos(groupIndex, degrees, command->toolIndex[groupIndex], &figure, &coord);
+                reply->previousCommandPositionCartesian[groupIndex][TCP_X] = MICROMETERS_TO_METERS(cartRespData.lPos[TCP_X]);
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Y] = MICROMETERS_TO_METERS(cartRespData.lPos[TCP_Y]);
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Z] = MICROMETERS_TO_METERS(cartRespData.lPos[TCP_Z]);
 
-            Quaternion qCmd;
-            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(coord.rx, coord.ry, coord.rz, &qCmd);
-
-            reply->previousCommandPositionCartesian[groupIndex][TCP_X] = MICROMETERS_TO_METERS(coord.x);
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Y] = MICROMETERS_TO_METERS(coord.y);
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Z] = MICROMETERS_TO_METERS(coord.z);
-
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Qx] = qCmd.x;
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Qy] = qCmd.y;
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Qz] = qCmd.z;
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Qw] = qCmd.w;
-            reply->previousCommandPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(coord.ex1);
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Qx] = qCmd.x;
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Qy] = qCmd.y;
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Qz] = qCmd.z;
+                reply->previousCommandPositionCartesian[groupIndex][TCP_Qw] = qCmd.w;
+                //Other robots have no elbow angle
+                if (group->numAxes >= 7)
+                    reply->previousCommandPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(cartRespData.lPos[6]);
+            }
         }
 
-        //after the FK, which needs moto-order
         Ros_RtMotionControl_ToSessionJointOrder(group, reply->previousCommandPositionJoints[groupIndex]);
     }
 }
@@ -943,11 +1221,9 @@ static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS
             QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(sent[3], sent[4], sent[5], &qSent);
             Ros_RtMotionControl_QuatMultiply(&qSent, q, q);
 
-            double norm = sqrt((q->x * q->x) + (q->y * q->y) + (q->z * q->z) + (q->w * q->w));
-            q->x /= norm;
-            q->y /= norm;
-            q->z /= norm;
-            q->w /= norm;
+            //Its length only differs from 1 by rounding errors, so this always normalizes it
+            double norm;
+            (void)Ros_RtMotionControl_NormalizeUnitQuaternion(q, &norm);
 
             expectedElbow[groupNo] += sent[6];
         }
@@ -981,6 +1257,7 @@ static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* t
                 Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetPulsePos failed", groupIndex);
                 return false;
             }
+            memcpy(prevRtCmdPosition[groupIndex], cmdPulse.lPos, sizeof(cmdPulse.lPos));
 
             //pulses. Nothing to check on the first command: it starts from the position read.
             for (int axis = 0; axis < MP_GRP_AXES_NUM && bExpectedPulsesRead; axis += 1)

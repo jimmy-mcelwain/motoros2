@@ -138,19 +138,20 @@ The `reset_error` service can be used to attempt to reset errors and alarms
 Type: [motoros2_interfaces/srv/StartRtMode](https://github.com/yaskawa-global/motoros2_interfaces/blob/main/srv/StartRtMode.srv)
 
 Attempts to enable servo drives, set the job-cycle mode to allow execution of `INIT_ROS`, and start a session of the [real-time UDP interface](rt_control.md).
-This allows the user to send incremental motion to the robot at the rate returned by the service (`period`).
+This allows the user to send joint positions, TCP poses, or increments of either, to the robot at the rate returned by the service (`period`).
 
 See [R/T Motion Control](rt_control.md) for information on the protocol implementation.
 
 The request selects:
 
-- `control_mode`: whether the increments are joint angles (`JOINT_INCREMENTS`) or Cartesian TCP offsets (`CARTESIAN_INCREMENTS`).
-  Cartesian mode is only supported when every control group is a robot.
+- `control_mode`: whether the packets contain joint increments (`JOINT_INCREMENTS`), Cartesian TCP increments (`CARTESIAN_INCREMENTS`), joint positions (`JOINT_ABSOLUTE`) or Cartesian TCP poses (`CARTESIAN_ABSOLUTE`).
+  The joint modes are recommended over the Cartesian modes, because their motion is more predictable (see [Activation](rt_control.md#activation)).
+  The Cartesian modes are only supported when every control group is a robot.
 - `joint_order`: the order of the joints in the packets (`JOINT_STATES`, the default, or `MOTOMAN`).
   This only makes a difference for robots with seven axes, or with fewer than six.
   See [Joints](rt_control.md#joints).
 
-The response contains the `period` (milliseconds) at which increments will be accepted, and the configured `timeout_for_rt_msg` and `max_sequence_diff_for_rt_msg`.
+The response contains the `period` (milliseconds) at which commands will be accepted, and the configured `timeout_for_rt_msg` and `max_sequence_diff_for_rt_msg`.
 
 While an R/T session is running, this service is rejected with `NOT_READY_ALREADY_ACTIVE`, and the session continues: call `stop_traj_mode` first (see [Activation](rt_control.md#activation)).
 
