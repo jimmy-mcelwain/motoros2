@@ -22,8 +22,11 @@ extern void Ros_RtMotionControl_AbortSession();
 
 typedef enum
 {
-    PacketType_Joint_Increments = 0,
-    PacketType_Cart_Increments
+    //Same values as motoros2_interfaces/msg/ControlModeEnum. 0 is not valid.
+    PacketType_Joint_Increments = 1,
+    PacketType_Cart_Increments = 2,
+    PacketType_Joint_Absolute = 3,
+    PacketType_Cart_Absolute = 4,
 } PacketType;
 
 typedef enum
@@ -96,14 +99,17 @@ struct RtPacket_
     //Must increment sequentially with each new command packet.
     UINT32 sequenceId;
 
+    //The positions to move to (absolute control modes), or the
+    //increments (incremental control modes).
+    //
     //For joint-space, this will be radians (or meters for linear axes)
     //of each joint, in the order selected by the joint_order field of
     //the start_rt_mode service. See doc/rt_control.md (Joints).
     //
     //For cartesian, this will be meters and quaternion of the TCP.
-    //The order of the joints must be in the order of [X Y Z Qx Qy Qz Qw Re].
+    //The order must be [X Y Z Qx Qy Qz Qw Re].
     //See CartesianIndices enum.
-    double delta[MAX_GROUPS][MP_GRP_AXES_NUM];
+    double command[MAX_GROUPS][MP_GRP_AXES_NUM];
 
     //The tool of each control group. Cartesian commands, and the Cartesian
     //poses in the reply, are for this tool's TCP. The select_motion_tool
@@ -151,12 +157,12 @@ struct RtReply_
     double feedbackPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double feedbackPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-    //The command position is the target destination you are instructing
-    //the robot to reach. It's the calculated endpoint based on the sum
-    //of all position increments received from the user.
+    //The position the robot has been commanded to: the sum of all the
+    //increments, or (in the absolute control modes) the positions, as far
+    //as the robot has followed them.
     //
     //This can be used to check whether the robot executed the
-    //increments as sent (see motionDeviationDetected), and to monitor
+    //commands as sent (see motionDeviationDetected), and to monitor
     //the latency between command and feedback.
     double previousCommandPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double previousCommandPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
