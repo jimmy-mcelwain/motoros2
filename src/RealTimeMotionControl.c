@@ -16,7 +16,7 @@ bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DAT
 bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 void Ros_RtMotionControl_Cleanup();
 void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
-bool Ros_RtMotionControl_CheckForFsuInterference(MOTION_MODE mode, int* tools);
+bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
 void Ros_RtMotionControl_PurgeBufferedPackets();
 void Ros_RtMotionControl_SendRobotStatus();
 
@@ -48,7 +48,7 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
     struct timeval tv;
     struct timeval* timeout;
 
-    bool fsuLimitingDetected;
+    bool motionDeviationDetected;
 
     bool packetTypeOK;
 
@@ -188,7 +188,7 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
                         break; //drop the connection
                 }
 
-                fsuLimitingDetected = Ros_RtMotionControl_CheckForFsuInterference(mode, incomingCommand.toolIndex);
+                motionDeviationDetected = Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex);
 
                 // Send increment to robot
                 int ret = mpExRcsIncrementMove(&moveData);
@@ -212,7 +212,7 @@ void Ros_RtMotionControl_HyperRobotCommanderX5(MOTION_MODE mode)
             //send status back to the PC and notify it that I'm ready for another packet
             previousSequenceId = incomingCommand.sequenceId;
             Ros_RtMotionControl_PopulateReplyMessage(mode, &incomingCommand, &outgoingReply);
-            outgoingReply.fsuInterferenceDetected = fsuLimitingDetected;
+            outgoingReply.motionDeviationDetected = motionDeviationDetected;
 
             Ros_RtMotionControl_PurgeBufferedPackets(); //in case user sent multiple commands while this was sleeping
             mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
@@ -520,7 +520,7 @@ void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* comman
     }
 }
 
-bool Ros_RtMotionControl_CheckForFsuInterference(MOTION_MODE mode, int* tools)
+bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
 {
     MP_CTRL_GRP_SEND_DATA ctrlGroup;
     MP_PULSE_POS_RSP_DATA cmdPulse;
@@ -531,7 +531,7 @@ bool Ros_RtMotionControl_CheckForFsuInterference(MOTION_MODE mode, int* tools)
     for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
     {
         //================================================================================
-        //FSU speed limit
+        //Did the controller execute the previous increment as sent? (ex: the FSU speed limit)
         //================================================================================
 
         LONG difference;

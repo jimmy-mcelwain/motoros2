@@ -149,8 +149,10 @@ enum CartesianIndices
 The command packet is a *packed* `RtReply` structure.
 This will echo the sequence ID, provide feedback position, and provide commanded position.
 
-Additionally, there is a flag to indicate if the Functional Safety Unit (FSU) reduced the speed of the **previous** command cycle.
-This indicates that the robot did not complete the full increment as commanded.
+Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increment of the **previous** command cycle as sent.
+Ex: the Functional Safety Unit (FSU) speed limit truncated it, or the controller changed it near a singularity.
+The motion continues, but not as commanded.
+Compare the commanded position in the reply with the expected one to see what happened.
 
 ```c
 //##########################################################################
@@ -172,19 +174,19 @@ struct RtReply
     //the robot to reach. It's the calculated endpoint based on the sum
     //of all position increments received from the user.
     //
-    //This is used to track if the robot's speed is being limited
-    //by the Functional Safety Unit (FSU). It can also be used to
-    //monitor the latency between command and feedback.
+    //This can be used to check whether the robot executed the
+    //increments as sent (see motionDeviationDetected), and to monitor
+    //the latency between command and feedback.
 
     double previousCommandPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double previousCommandPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-    //If the FSU speed limit is enabled, it can truncate the commanded
-    //delta increments. This flag is an indicator that the *previous*
-    //command cycle was truncated. It does NOT indicate that this most
-    //recent command packet was truncated.
+    //Set when the controller did not execute the *previous* command
+    //cycle's increment as sent (ex: the FSU speed limit truncated it, or
+    //the controller changed it near a singularity). It does NOT indicate
+    //anything about this most recent command packet.
 
-    bool fsuInterferenceDetected;
+    bool motionDeviationDetected;
 }
 ```
 
