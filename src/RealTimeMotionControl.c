@@ -20,7 +20,8 @@ static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
-static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools);
+static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools, bool* pbDeviation);
+static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS_DATA* moveData);
 static void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static UINT32 Ros_RtMotionControl_WaitForStopCause();
@@ -58,12 +59,24 @@ static UINT16 sessionJointOrder = motoros2_interfaces__msg__JointOrderEnum__JOIN
 
 static int sockRtCommandListener = -1;
 
-static LONG prevRtCmdPosition[MAX_GROUPS][MAX_AXES];
-static LONG howMuchShouldIHaveMoved[MAX_GROUPS][MAX_AXES];
-
-//Cartesian mode: the tool which prevRtCmdPosition was read with (-1 = not read yet).
-//A TCP pose is only comparable with another pose of the same tool.
-static int rtDeviationCheckTool[MAX_GROUPS];
+//The position the robot should have been commanded to: a position read from the controller,
+//plus every increment sent since. The deviation check compares it with the position read each
+//cycle, so a loss which is too small to see in a single cycle still adds up until it passes the
+//thresholds. Then the flag is set, and the position read becomes the new starting point. (In the
+//incremental modes, motion which wasn't executed isn't made up, so the difference would never
+//shrink again.)
+//The Cartesian pose read from the controller is forward kinematics of the commanded joint pulses,
+//which are whole numbers, so it can differ from this by up to about one pulse of each joint. The
+//difference doesn't accumulate: the controller carries the fraction of a pulse it hasn't moved yet
+//over to the next increment. (On a GP12, 2500 increments of 1 um ended 1 um from their sum.)
+static LONG expectedPulses[MAX_GROUPS][MP_GRP_AXES_NUM];  //joint mode, Motoman order
+static bool bExpectedPulsesRead;                          //joint mode: false until the first command
+static double expectedTranslation[MAX_GROUPS][3];         //Cartesian mode (robot frame), micrometers
+static Quaternion expectedOrientation[MAX_GROUPS];
+static double expectedElbow[MAX_GROUPS];                  //0.0001 degrees
+//Cartesian mode: the tool of the expected pose (-1 = not read yet). A TCP pose is only comparable
+//with another pose of the same tool.
+static int expectedTool[MAX_GROUPS];
 
 //The motion API only accepts whole units (pulse, micrometer, 0.0001 degree). The fraction
 //of a unit which was commanded but not sent is carried over to the next cycle. Otherwise the
@@ -103,8 +116,6 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     //=========================================================================================
 
-    bzero(prevRtCmdPosition, MAX_GROUPS * MAX_AXES * sizeof(LONG));
-    bzero(howMuchShouldIHaveMoved, MAX_GROUPS * MAX_AXES * sizeof(LONG));
     bzero(residualIncrement, sizeof(residualIncrement));
 
     if (mode == MOTION_MODE_RT_JOINT)
@@ -237,7 +248,12 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 break; //drop the connection
             }
 
-            motionDeviationDetected = Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex);
+            if (!Ros_RtMotionControl_CheckForMotionDeviation(mode, incomingCommand.toolIndex, &motionDeviationDetected))
+            {
+                endReason = EndReason_InternalError;
+                bEndReplyToSender = true;
+                break; //drop the connection
+            }
 
             // Send increment to robot
             int ret = mpExRcsIncrementMove(&moveData);
@@ -295,16 +311,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 break; //drop the connection
             }
 
-            //track how big the increment SHOULD have been
-            //we'll compare next cycle to see what actually happened
-            bzero(howMuchShouldIHaveMoved, MAX_GROUPS * MAX_AXES * sizeof(LONG));
-            for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
-            {
-                for (int axis = 0; axis < MAX_AXES; axis += 1)
-                {
-                    howMuchShouldIHaveMoved[groupIndex][axis] = moveData.grp_pos_info[groupIndex].pos[axis];
-                }
-            }
+            //Next cycle, the deviation check compares the commanded position with this
+            Ros_RtMotionControl_AddToExpectedPosition(mode, &moveData);
         }
         else if (waitResult < 0)
         {
@@ -451,8 +459,6 @@ void Ros_RtMotionControl_AbortSession()
 static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
 {
     int i;
-    MP_CTRL_GRP_SEND_DATA ctrlGroup;
-    MP_PULSE_POS_RSP_DATA cmdPulse;
 
     bzero(moveData, sizeof(MP_EXPOS_DATA));
 
@@ -461,12 +467,10 @@ static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData)
         moveData->ctrl_grp |= (0x01 << i);
         moveData->grp_pos_info[i].pos_tag.data[0] = Ros_CtrlGroup_GetAxisConfig(g_Ros_Controller.ctrlGroups[i]);
         moveData->grp_pos_info[i].pos_tag.data[3] = MP_INC_PULSE_DTYPE;
-
-
-        ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[i]->groupId;
-        mpGetPulsePos(&ctrlGroup, &cmdPulse);
-        memcpy(prevRtCmdPosition[i], cmdPulse.lPos, sizeof(cmdPulse.lPos));
     }
+
+    //The starting position is read on the first command (see Ros_RtMotionControl_CheckForMotionDeviation)
+    bExpectedPulsesRead = false;
 }
 
 static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
@@ -494,7 +498,7 @@ static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData)
         moveData->grp_pos_info[i].pos_tag.data[3] = MP_INC_RF_DTYPE;
 
         //The starting pose is read on the first command, with the tool that command selects.
-        rtDeviationCheckTool[i] = -1;
+        expectedTool[i] = -1;
     }
 
     return true;
@@ -514,6 +518,14 @@ static LONG Ros_RtMotionControl_TakeWholeUnits(double increment, double* residua
 
     *residual = total - whole;
     return whole;
+}
+
+//The difference of two elbow angles (0.0001 degrees), the short way around. The elbow angle wraps
+//around at +-180 degrees, like the Euler angles (ex: 179 degrees is 2 degrees past -179).
+static double Ros_RtMotionControl_ElbowDifference(double to, double from)
+{
+    double difference = to - from;
+    return difference - 3600000.0 * floor((difference + 1800000.0) / 3600000.0);
 }
 
 static bool Ros_RtMotionControl_IsValidTool(int groupNo, int toolIndex)
@@ -712,6 +724,19 @@ static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXP
     return true;
 }
 
+//out = a * b
+static void Ros_RtMotionControl_QuatMultiply(const Quaternion* a, const Quaternion* b, Quaternion* out)
+{
+    Quaternion result;
+
+    result.w = a->w * b->w - a->x * b->x - a->y * b->y - a->z * b->z;
+    result.x = a->w * b->x + a->x * b->w + a->y * b->z - a->z * b->y;
+    result.y = a->w * b->y - a->x * b->z + a->y * b->w + a->z * b->x;
+    result.z = a->w * b->z + a->x * b->y - a->y * b->x + a->z * b->w;
+
+    *out = result;
+}
+
 void Ros_RtMotionControl_OpenSocket()
 {
     struct sockaddr_in server_addr;
@@ -854,125 +879,161 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
     }
 }
 
-static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools)
+//Cartesian mode: starts the expected pose from a pose read from the controller
+static void Ros_RtMotionControl_SetExpectedPose(int groupNo, const LONG* pose, int tool)
+{
+    for (int i = 0; i < 3; i += 1)
+        expectedTranslation[groupNo][i] = pose[TCP_X + i];
+    QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(pose[3], pose[4], pose[5], &expectedOrientation[groupNo]);
+    expectedElbow[groupNo] = pose[6];
+    expectedTool[groupNo] = tool;
+}
+
+//Cartesian mode: whether a pose read from the controller differs from the expected pose by more
+//than the thresholds
+static bool Ros_RtMotionControl_PoseDeviates(int groupNo, const LONG* pose)
+{
+    Quaternion qRead;
+    bool bDeviates = false;
+
+    //Translation (micrometers)
+    for (int i = 0; i < 3; i += 1)
+    {
+        if (fabs(pose[TCP_X + i] - expectedTranslation[groupNo][i]) > g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers)
+            bDeviates = true;
+    }
+
+    //Rotation (0.0001 degrees)
+    //The orientation is in Euler angles, so a rotation about one axis can change all three of
+    //them. The individual angles can't be compared. Instead, compare the angle between the
+    //orientations, which also catches a rotation about the wrong axis.
+    QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(pose[3], pose[4], pose[5], &qRead);
+    if (fabs(RAD_TO_DEG_0001(Ros_RtMotionControl_RotationAngle(&expectedOrientation[groupNo], &qRead))) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
+        bDeviates = true;
+
+    //Elbow angle (0.0001 degrees)
+    if (g_Ros_Controller.ctrlGroups[groupNo]->numAxes >= 7 &&
+        fabs(Ros_RtMotionControl_ElbowDifference(pose[6], expectedElbow[groupNo])) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
+        bDeviates = true;
+
+    return bDeviates;
+}
+
+//Adds the increments which were just sent to the expected position
+static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS_DATA* moveData)
+{
+    for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        LONG* sent = moveData->grp_pos_info[groupNo].pos;
+
+        if (mode == MOTION_MODE_RT_JOINT)
+        {
+            for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
+                expectedPulses[groupNo][axis] += sent[axis];
+        }
+        else
+        {
+            Quaternion qSent;
+            Quaternion* q = &expectedOrientation[groupNo];
+
+            for (int i = 0; i < 3; i += 1)
+                expectedTranslation[groupNo][i] += sent[TCP_X + i];
+
+            //Robot frame increments compose as R_new = R_increment * R_old
+            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(sent[3], sent[4], sent[5], &qSent);
+            Ros_RtMotionControl_QuatMultiply(&qSent, q, q);
+
+            double norm = sqrt((q->x * q->x) + (q->y * q->y) + (q->z * q->z) + (q->w * q->w));
+            q->x /= norm;
+            q->y /= norm;
+            q->z /= norm;
+            q->w /= norm;
+
+            expectedElbow[groupNo] += sent[6];
+        }
+    }
+}
+
+//Compares the position the robot has been commanded to with the expected position (see
+//expectedPulses), and sets *pbDeviation if any group differs by more than the thresholds (ex: the
+//FSU speed limit truncated an increment, or the controller changed it near a singularity).
+//Returns false if the position can't be read.
+static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools, bool* pbDeviation)
 {
     MP_CTRL_GRP_SEND_DATA ctrlGroup;
     MP_PULSE_POS_RSP_DATA cmdPulse;
     MP_CARTPOS_EX_SEND_DATA cartSendData;
     MP_CART_POS_RSP_DATA_EX cartRespData;
-    bool returnValue = FALSE;
+
+    *pbDeviation = false;
 
     for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
     {
-        //================================================================================
-        //Did the controller execute the previous increment as sent? (ex: the FSU speed limit)
-        //================================================================================
-
-        LONG difference;
-        LONG howMuchDidIActuallyMove[MAX_AXES];
-        LONG previousPosition[MAX_AXES];
-        bzero(howMuchDidIActuallyMove, sizeof(LONG) * MAX_AXES);
-        memcpy(previousPosition, prevRtCmdPosition[groupIndex], sizeof(previousPosition));
+        bool bGroupDeviates = false;
 
         if (mode == MOTION_MODE_RT_JOINT)
         {
             //Not Ros_CtrlGroup_GetPulsePosCmd. That is only for converting incoming absolute
             //positions. See https://github.com/Yaskawa-Global/motoros2/discussions/455
             ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
-            mpGetPulsePos(&ctrlGroup, &cmdPulse);
+            if (mpGetPulsePos(&ctrlGroup, &cmdPulse) != OK)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetPulsePos failed", groupIndex);
+                return false;
+            }
+
+            //pulses. Nothing to check on the first command: it starts from the position read.
+            for (int axis = 0; axis < MP_GRP_AXES_NUM && bExpectedPulsesRead; axis += 1)
+            {
+                if (abs(cmdPulse.lPos[axis] - expectedPulses[groupIndex][axis]) > g_nodeConfigSettings.rt_motion_deviation_threshold_pulses)
+                    bGroupDeviates = true;
+            }
+
+            if (bGroupDeviates || !bExpectedPulsesRead)
+                memcpy(expectedPulses[groupIndex], cmdPulse.lPos, sizeof(cmdPulse.lPos));
         }
         else if (mode == MOTION_MODE_RT_CARTESIAN)
         {
             cartSendData.sRobotNo = groupIndex;
             cartSendData.sFrame = 1; //1 = RF
 
-            if (rtDeviationCheckTool[groupIndex] < 0)
+            //Nothing to check before the first command
+            if (expectedTool[groupIndex] >= 0)
             {
-                //First command. Nothing has been commanded yet, so there is nothing to check.
-                //Read the starting pose with the tool this command uses.
+                //Read the pose with the tool the increments were commanded with
+                cartSendData.sToolNo = expectedTool[groupIndex];
+                if (mpGetCartPosEx(&cartSendData, &cartRespData) != OK)
+                {
+                    Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetCartPosEx failed (tool [%d])", groupIndex, expectedTool[groupIndex]);
+                    return false;
+                }
+
+                bGroupDeviates = Ros_RtMotionControl_PoseDeviates(groupIndex, cartRespData.lPos);
+                if (bGroupDeviates)
+                    Ros_RtMotionControl_SetExpectedPose(groupIndex, cartRespData.lPos, expectedTool[groupIndex]);
+            }
+
+            if (tools[groupIndex] != expectedTool[groupIndex])
+            {
+                //First command, or this command changes the tool. Start again from the pose
+                //read with this command's tool, so its increment is checked against the same TCP.
                 cartSendData.sToolNo = tools[groupIndex];
-                mpGetCartPosEx(&cartSendData, &cartRespData);
-                memcpy(prevRtCmdPosition[groupIndex], cartRespData.lPos, sizeof(LONG) * MAX_AXES);
-                rtDeviationCheckTool[groupIndex] = tools[groupIndex];
-                continue;
-            }
-
-            //Check the previous increment with the tool it was commanded with
-            cartSendData.sToolNo = rtDeviationCheckTool[groupIndex];
-            mpGetCartPosEx(&cartSendData, &cartRespData);
-        }
-
-        // Check if pulses (or mm's) are missing from last increment.
-        // Get the current controller command position and substract the previous command position
-        // and check if it matches the amount if increment sent last cycle
-        for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
-        {
-            if (mode == MOTION_MODE_RT_CARTESIAN)
-            {
-                howMuchDidIActuallyMove[axis] = cartRespData.lPos[axis] - prevRtCmdPosition[groupIndex][axis];
-                prevRtCmdPosition[groupIndex][axis] = cartRespData.lPos[axis];
-            }
-			else if (mode == MOTION_MODE_RT_JOINT)
-            {
-                howMuchDidIActuallyMove[axis] = cmdPulse.lPos[axis] - prevRtCmdPosition[groupIndex][axis];
-                prevRtCmdPosition[groupIndex][axis] = cmdPulse.lPos[axis];
+                if (mpGetCartPosEx(&cartSendData, &cartRespData) != OK)
+                {
+                    Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetCartPosEx failed (tool [%d])", groupIndex, tools[groupIndex]);
+                    return false;
+                }
+                Ros_RtMotionControl_SetExpectedPose(groupIndex, cartRespData.lPos, tools[groupIndex]);
             }
         }
-		
-        if (mode == MOTION_MODE_RT_JOINT)
-        {
-            //pulses
-            for (int axis = 0; axis < MP_GRP_AXES_NUM; axis += 1)
-            {
-                difference = howMuchShouldIHaveMoved[groupIndex][axis] - howMuchDidIActuallyMove[axis];
-                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_pulses)
-                    returnValue = TRUE;
-            }
-        }
-        else if (mode == MOTION_MODE_RT_CARTESIAN)
-        {
-            //Translation (micrometers)
-            for (int axis = TCP_X; axis <= TCP_Z; axis += 1)
-            {
-                difference = howMuchShouldIHaveMoved[groupIndex][axis] - howMuchDidIActuallyMove[axis];
-                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_micrometers)
-                    returnValue = TRUE;
-            }
 
-            //Rotation (0.0001 degrees)
-            //The orientation is in Euler angles, so a rotation about one axis can change all
-            //three of them. The individual angles can't be compared. Instead, compare the size
-            //of the rotation which was commanded with the size of the rotation which happened.
-            Quaternion qCommanded, qPrevious, qCurrent;
-            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(howMuchShouldIHaveMoved[groupIndex][3],
-                howMuchShouldIHaveMoved[groupIndex][4], howMuchShouldIHaveMoved[groupIndex][5], &qCommanded);
-            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(previousPosition[3], previousPosition[4], previousPosition[5], &qPrevious);
-            QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(cartRespData.lPos[3], cartRespData.lPos[4], cartRespData.lPos[5], &qCurrent);
-
-            double angleDifference = Ros_RtMotionControl_RotationAngle(NULL, &qCommanded) - Ros_RtMotionControl_RotationAngle(&qPrevious, &qCurrent);
-            if (fabs(RAD_TO_DEG_0001(angleDifference)) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
-                returnValue = TRUE;
-
-            //Elbow angle (0.0001 degrees)
-            if (g_Ros_Controller.ctrlGroups[groupIndex]->numAxes >= 7)
-            {
-                difference = howMuchShouldIHaveMoved[groupIndex][6] - howMuchDidIActuallyMove[6];
-                if (abs(difference) > g_nodeConfigSettings.rt_motion_deviation_threshold_deg_0001)
-                    returnValue = TRUE;
-            }
-
-            if (tools[groupIndex] != rtDeviationCheckTool[groupIndex])
-            {
-                //This command changes the tool. Re-read the pose with the new tool, so the
-                //next cycle checks this command's increment against the same TCP.
-                cartSendData.sToolNo = tools[groupIndex];
-                mpGetCartPosEx(&cartSendData, &cartRespData);
-                memcpy(prevRtCmdPosition[groupIndex], cartRespData.lPos, sizeof(LONG) * MAX_AXES);
-                rtDeviationCheckTool[groupIndex] = tools[groupIndex];
-            }
-        }
+        if (bGroupDeviates)
+            *pbDeviation = true;
     }
-    return returnValue;
+
+    if (mode == MOTION_MODE_RT_JOINT)
+        bExpectedPulsesRead = true;
+    return true;
 }
 
 //Returns the angle (radians) of the rotation from 'from' to 'to'.

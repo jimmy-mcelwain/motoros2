@@ -369,10 +369,12 @@ publisher_qos:
 
 #-----------------------------------------------------------------------------
 # Thresholds for the 'motionDeviationDetected' flag in the R/T reply packet.
-# Each cycle, the increment sent to the robot is compared with how far the
-# robot's command position actually moved. If they differ by more than these
-# amounts, the flag is set (ex: the FSU speed limit truncated the increment, or
-# the controller changed it near a singularity).
+# Each cycle, the robot's command position is compared with where it should be:
+# a position read earlier, plus every increment sent since. If they differ by
+# more than these amounts, the flag is set (ex: the FSU speed limit truncated
+# an increment, or the controller changed it near a singularity), and the
+# comparison starts again from the command position. A difference which is too
+# small to see in one cycle still adds up until it passes these amounts.
 #
 # Raise these if the flag is set during motion which isn't being limited.
 # They only affect the flag, not the motion.
