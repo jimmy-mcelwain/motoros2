@@ -43,6 +43,48 @@ static EndReason Ros_RtMotionControl_MultipleSources(const struct sockaddr_in* c
 static int Ros_RtMotionControl_WaitForPacket();
 static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to);
 
+//Timing of one R/T cycle, in system clock ticks. Used to find out where a cycle loses time.
+typedef struct
+{
+    ULONG received;     //command received
+    ULONG moved;        //increment passed to the motion API
+    ULONG tick;         //interpolation clock tick
+    ULONG populated;    //reply message filled in
+    ULONG discarded;    //early packets discarded
+    ULONG replied;      //reply sent
+} RtCycleTimes;
+
+//A cycle which lost a tick or replied late. Kept until the session ends, and only logged then,
+//so logging doesn't take time from the cycles being measured. The sequenceId lets the client
+//match it to its own log.
+typedef struct
+{
+    UINT32 sequenceId;
+    ULONG sincePrevTick;    //the previous cycle's tick to this cycle's tick
+    ULONG waitForCommand;   //the previous reply to this command
+    ULONG processing;       //this command to the motion API
+    ULONG waitForTick;      //the motion API to the tick
+    ULONG buildingReply;    //the tick to this reply. The sum of the next three:
+    ULONG populating;       //  the tick to the reply message being filled in
+    ULONG discarding;       //  discarding early packets
+    ULONG sending;          //  sending the reply
+} RtTimingEvent;
+
+#define RT_TIMING_MAX_EVENTS    32
+
+typedef struct
+{
+    UINT32 cycles;
+    UINT32 lostTickCycles;  //cycles which started more than one tick after the previous one
+    UINT32 lateReplies;     //replies sent more than half a period after the tick
+    UINT32 problemCycles;   //either of the above
+    int numEvents;
+    RtTimingEvent events[RT_TIMING_MAX_EVENTS];
+} RtTimingStats;
+
+static void Ros_RtMotionControl_CheckCycleTiming(UINT32 sequenceId, const RtCycleTimes* prev, const RtCycleTimes* now, RtTimingStats* stats);
+static void Ros_RtMotionControl_LogCycleTiming(const RtTimingStats* stats);
+
 //How often the R/T task checks for a stop request while waiting for a command packet
 #define RT_STOP_POLL_PERIOD_MS      100
 //How long to wait for the R/T task to exit on its own before it gets deleted
@@ -132,6 +174,11 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     UINT32 robotStatus;
 
+    RtCycleTimes cycleTimes;
+    RtCycleTimes prevCycleTimes;
+    bool bHavePrevCycle = false;
+    RtTimingStats timingStats;
+
     //=========================================================================================
 
     bzero(prevRtCmdPosition, sizeof(prevRtCmdPosition));
@@ -152,6 +199,9 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     Ros_Debug_BroadcastMsg("Starting RT session");
 
+    bzero(&timingStats, sizeof(timingStats));
+    Ros_Debug_BroadcastMsg("R/T timing: the system clock ticks every %.3f ms", (float)mpGetRtc());
+
     robotStatus = Ros_RtMotionControl_ReadRobotStatus();
 
     //=========================================================================================
@@ -162,6 +212,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         {
             client_addr_len = sizeof(client_addr);
             bytes_received = mpRecvFrom(sockRtCommandListener, receiveBuffer, sizeof(receiveBuffer), 0, (struct sockaddr*)&client_addr, &client_addr_len);
+            cycleTimes.received = tickGet();
             if (bytes_received < 0)
             {
                 Ros_Debug_BroadcastMsg("ERROR: recvFrom returned an error");
@@ -297,6 +348,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
             // Send increment to robot
             int ret = mpExRcsIncrementMove(&moveData);
+            cycleTimes.moved = tickGet();
             if (ret != OK)
             {
                 Ros_Debug_BroadcastMsg("WARN: mpExRcsIncrementMove returned %d", ret);
@@ -311,6 +363,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
             // Wait for next interpolation cycle
             mpClkAnnounce(MP_INTERPOLATION_CLK);
+            cycleTimes.tick = tickGet();
 
             //send status back to the PC and notify it that I'm ready for another packet
             previousSequenceId = incomingCommand.sequenceId;
@@ -319,6 +372,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             outgoingReply.endReason = EndReason_None;
             outgoingReply.robotStatus = robotStatus;
             outgoingReply.motionDeviationDetected = motionDeviationDetected;
+            cycleTimes.populated = tickGet();
 
             //Discard anything which arrived while waiting for the interpolation clock. This must
             //happen before the reply is sent, so a client which waits for the reply can't be affected.
@@ -328,8 +382,15 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 endReason = discardReason;
                 break; //drop the connection
             }
+            cycleTimes.discarded = tickGet();
 
             mpSendTo(sockRtCommandListener, (char*)&outgoingReply, sizeof(RtReply), 0, (struct sockaddr*)&client_addr, client_addr_len);
+            cycleTimes.replied = tickGet();
+
+            if (bHavePrevCycle)
+                Ros_RtMotionControl_CheckCycleTiming(incomingCommand.sequenceId, &prevCycleTimes, &cycleTimes, &timingStats);
+            prevCycleTimes = cycleTimes;
+            bHavePrevCycle = true;
 
             //Read the status for the next reply now, while the client is computing its next
             //command, so it doesn't delay the reply.
@@ -406,6 +467,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     }
 
     Ros_Debug_BroadcastMsg("Ending Rt Session (reason: %d)", endReason);
+    Ros_RtMotionControl_LogCycleTiming(&timingStats);
 
     //Ros_RtMotionControl_StopSession waits for this
     bRtTaskRunning = FALSE;
@@ -1428,6 +1490,62 @@ static EndReason Ros_RtMotionControl_MultipleSources(const struct sockaddr_in* c
                             (UINT32)sender->sin_addr.s_addr);
     *endDetail = (int)sender->sin_addr.s_addr;
     return EndReason_MultipleSources;
+}
+
+//Counts the cycles which lost a tick or replied late, and keeps the first ones to log when the
+//session ends. A lost tick can also be the client's doing (ex: it sent its command late). That
+//shows as a long wait for the command.
+static void Ros_RtMotionControl_CheckCycleTiming(UINT32 sequenceId, const RtCycleTimes* prev, const RtCycleTimes* now, RtTimingStats* stats)
+{
+    const float msPerTick = (float)mpGetRtc();
+    const float period = g_Ros_Controller.interpolPeriod;
+    const bool bLostTick = ((now->tick - prev->tick) * msPerTick) > (period * 1.5f);
+    const bool bLateReply = ((now->replied - now->tick) * msPerTick) > (period / 2.0f);
+
+    stats->cycles += 1;
+    if (bLostTick)
+        stats->lostTickCycles += 1;
+    if (bLateReply)
+        stats->lateReplies += 1;
+
+    if (!bLostTick && !bLateReply)
+        return;
+
+    stats->problemCycles += 1;
+    if (stats->numEvents < RT_TIMING_MAX_EVENTS)
+    {
+        RtTimingEvent* event = &stats->events[stats->numEvents];
+        event->sequenceId = sequenceId;
+        event->sincePrevTick = now->tick - prev->tick;
+        event->waitForCommand = now->received - prev->replied;
+        event->processing = now->moved - now->received;
+        event->waitForTick = now->tick - now->moved;
+        event->buildingReply = now->replied - now->tick;
+        event->populating = now->populated - now->tick;
+        event->discarding = now->discarded - now->populated;
+        event->sending = now->replied - now->discarded;
+        stats->numEvents += 1;
+    }
+}
+
+static void Ros_RtMotionControl_LogCycleTiming(const RtTimingStats* stats)
+{
+    const float msPerTick = (float)mpGetRtc();
+
+    Ros_Debug_BroadcastMsg("R/T timing: %u cycles, %u started late (lost a tick), %u late replies",
+        stats->cycles, stats->lostTickCycles, stats->lateReplies);
+
+    for (int i = 0; i < stats->numEvents; i += 1)
+    {
+        const RtTimingEvent* event = &stats->events[i];
+        Ros_Debug_BroadcastMsg("R/T timing: seq %u: %.1f ms between ticks. Previous reply to command: %.1f ms, processing: %.1f ms, wait for tick: %.1f ms, building reply: %.1f ms (populating %.1f, discarding %.1f, sending %.1f)",
+            event->sequenceId, event->sincePrevTick * msPerTick, event->waitForCommand * msPerTick,
+            event->processing * msPerTick, event->waitForTick * msPerTick, event->buildingReply * msPerTick,
+            event->populating * msPerTick, event->discarding * msPerTick, event->sending * msPerTick);
+    }
+
+    if (stats->problemCycles > (UINT32)stats->numEvents)
+        Ros_Debug_BroadcastMsg("R/T timing: only the first %d are listed", RT_TIMING_MAX_EVENTS);
 }
 
 //Reads the robot's state into a bitfield of RobotStatusBits
