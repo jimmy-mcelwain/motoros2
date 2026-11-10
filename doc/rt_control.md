@@ -172,7 +172,7 @@ The current version is `2`.
 
 #### Joints
 
-When the `control_mode` is `JOINT_ANGLES (1)`, the `delta` array contains the increment for each joint.
+When the `control_mode` is `JOINT_INCREMENTS (1)`, the `delta` array contains the increment for each joint.
 The order of the joints is selected by the `joint_order` field of the [start_rt_mode](ros_api.md#start_rt_mode) service.
 This order is also used for the joint positions in the reply, in both control modes.
 
@@ -189,7 +189,7 @@ Linear axes (ex: base tracks) are in meters.
 
 #### Cartesian
 
-When the `control_mode` is `CARTESIAN (2)`, the order of the joints in the `delta` array must be in order of `X Y Z Qx Qy Qz Qw Re`.
+When the `control_mode` is `CARTESIAN_INCREMENTS (2)`, the order of the joints in the `delta` array must be in order of `X Y Z Qx Qy Qz Qw Re`.
 
 The increments are expressed in the robot coordinate frame (RF), and are applied to the tool selected by `toolIndex`.
 The rotation must be a unit quaternion: a length within `0.01` of `1` is accepted, and normalized.

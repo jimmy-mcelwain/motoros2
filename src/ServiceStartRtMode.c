@@ -82,9 +82,9 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
 
     settings.jointOrder = request->joint_order.value;
 
-    if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN)
+    if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__CARTESIAN_INCREMENTS)
         mm = MOTION_MODE_RT_CARTESIAN;
-    else if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__JOINT_ANGLES)
+    else if (request->control_mode.value == motoros2_interfaces__msg__ControlModeEnum__JOINT_INCREMENTS)
         mm = MOTION_MODE_RT_JOINT;
 
     if (request->joint_order.value != motoros2_interfaces__msg__JointOrderEnum__JOINT_STATES &&

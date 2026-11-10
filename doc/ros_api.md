@@ -144,7 +144,7 @@ See [R/T Motion Control](rt_control.md) for information on the protocol implemen
 
 The request selects:
 
-- `control_mode`: whether the increments are joint angles (`JOINT_ANGLES`) or Cartesian TCP offsets (`CARTESIAN`).
+- `control_mode`: whether the increments are joint angles (`JOINT_INCREMENTS`) or Cartesian TCP offsets (`CARTESIAN_INCREMENTS`).
   Cartesian mode is only supported when every control group is a robot.
 - `joint_order`: the order of the joints in the packets (`JOINT_STATES`, the default, or `MOTOMAN`).
   This only makes a difference for robots with seven axes, or with fewer than six.
