@@ -27,7 +27,7 @@ static void Ros_RtMotionControl_InitJointSpace(MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_InitCartesian(MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseJointSpace(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseCartesian(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
-static void Ros_RtMotionControl_StartAbsolute(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
+static void Ros_RtMotionControl_Handshake(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseJointAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseCartesianAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_AreToolsValid(RtPacket* incomingCommand);
@@ -297,6 +297,17 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 continue;
             }
 
+            //The first command must be 0, so a client which still sends an old session's
+            //commands can't start this one
+            if (bFirstRecv && incomingCommand.sequenceId != 0)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: The first command is [%u]. It must be 0.", incomingCommand.sequenceId);
+                endReason = EndReason_SequenceGap;
+                endDetail = (int)incomingCommand.sequenceId;
+                bEndReplyToSender = true;
+                break; //drop the connection
+            }
+
             //Check if the sequence ID jumped too far ahead (wraparound safe)
             if ((incomingCommand.sequenceId - previousSequenceId) > g_nodeConfigSettings.max_sequence_diff_for_rt_msg)
             {
@@ -326,8 +337,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             }
 
             bool bParsedOK = true;
-            if (sessionAbsolute && bFirstRecv)
-                Ros_RtMotionControl_StartAbsolute(mode, &incomingCommand, &moveData);
+            if (bFirstRecv)
+                Ros_RtMotionControl_Handshake(mode, &incomingCommand, &moveData);
             else if (mode == MOTION_MODE_RT_JOINT)
             {
                 bParsedOK = sessionAbsolute ? Ros_RtMotionControl_ParseJointAbsolute(&incomingCommand, &moveData) :
@@ -886,14 +897,15 @@ static void Ros_RtMotionControl_QuatMultiply(const Quaternion* a, const Quaterni
     *out = result;
 }
 
-//The first command of an absolute session is not executed. The client doesn't know the
-//robot's position yet. The reply to this command tells it.
-static void Ros_RtMotionControl_StartAbsolute(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
+//The first command of a session is a handshake, in every control mode: its positions or
+//increments are not executed, only its tools are selected. The client doesn't know the
+//position the robot has been commanded to yet. The reply to this command tells it.
+static void Ros_RtMotionControl_Handshake(MOTION_MODE mode, RtPacket* incomingCommand, MP_EXPOS_DATA* moveData)
 {
     for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
     {
-        //A later command which changes the tool isn't executed either
-        if (mode == MOTION_MODE_RT_CARTESIAN)
+        //CARTESIAN_ABSOLUTE: a later command which changes the tool isn't executed either
+        if (sessionAbsolute && mode == MOTION_MODE_RT_CARTESIAN)
             absPrevTool[groupNo] = incomingCommand->toolIndex[groupNo];
 
         bzero(moveData->grp_pos_info[groupNo].pos, sizeof(moveData->grp_pos_info[groupNo].pos));
