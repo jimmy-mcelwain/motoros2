@@ -415,6 +415,24 @@ enum EndReason
 
 `endDetail` is `0` for the reasons which don't list a value.
 
+For `MotionRejected`, `endDetail` is the return code of `mpExRcsIncrementMove`, or `0`:
+
+| `endDetail` | Meaning |
+| ----------- | ------- |
+| `0` | The increment was accepted, but the robot stopped anyway (ex: E-stop, HOLD), or the pendant left REMOTE mode. See `robotStatus` for the cause. |
+| `-1` | The job is not executing its `WAIT` instruction (ex: an alarm or HOLD stopped it). See `robotStatus` for the cause. |
+| `-2` | No job is running |
+| `-8` | The control group is being jogged |
+| `-9` | The control group is executing a move instruction |
+| `-13` | Another job is using the control group |
+| `-19` | PFL is active (`E_EXRCS_PFL_FUNC_BUSY`, HC robots; not tested) |
+| `-20` | Energy saving mode is active (`E_EXRCS_UNDER_ENERGY_SAVING`): the drives are off (`DrivesPowered` cleared) (see [Command Flow](#command-flow)) |
+
+The other return codes (`-3` - `-7`, `-10` - `-12`) are errors in data which MotoROS2 sets, and should not occur.
+`-19` and `-20` aren't defined in the MotoPlus SDK headers (MotoROS2 defines them).
+`-20` was seen on a YRC1000, `-19` hasn't been seen yet.
+The same cause can give either value: HOLD gave `0` or `-1`, depending on whether the controller accepted the increment before it held the job (on a GP12, it gave `-1` in 16 of 16 tries).
+
 ### Robot status
 
 ```c
