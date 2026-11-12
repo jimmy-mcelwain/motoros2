@@ -56,10 +56,8 @@ It is the controller's interpolation period, which depends on the robot model an
 The UDP port (`22000` by default, set by `rt_listener_udp_port_number`) is opened when MotoROS2 starts.
 Packets which arrived while no session was running are discarded when `start_rt_mode` is called.
 The user then sends the first command with the `sequenceId` field set to `0`.
-In the absolute modes, the first command is not executed: its reply reports the position the robot has been commanded to, which the next command moves from.
-See [Absolute positions](#absolute-positions).
-In the incremental modes, the first command is executed.
-It is recommended that it contains zero increments, so the client can read the commanded position from the reply before it moves the robot.
+The first command is a handshake, in every control mode: its positions or increments are ignored, and only its `toolIndex` takes effect.
+Its reply reports the position the robot has been commanded to (`previousCommandPositionJoints` / `previousCommandPositionCartesian`), and the next command moves from there.
 Each subsequent command must increment the `sequenceId`, and must not be sent until the robot has replied to the previous command.
 The replies are sent at the rate of the `period` from the [start_rt_mode](ros_api.md#start_rt_mode) service.
 
@@ -90,7 +88,7 @@ The session is also dropped if:
 - a command has the wrong size, `version` or `packetType`
 - a command is received from an IP address other than the one which sent the first valid command (that host owns the session)
 - a command is sent before the reply to the previous command
-- the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
+- the first command's `sequenceId` is not `0`, or the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
 - a command is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
 - a `toolIndex` is not `0` - `63`
 - the robot rejects the motion, or stops (ex: E-stop, HOLD, alarm, PFL, servo power off)
@@ -164,7 +162,8 @@ struct RtPacket
 
     PacketType packetType;
 
-    //Must increment sequentially with each new command packet.
+    //Must increment sequentially with each new command packet. The
+    //first command of a session must be 0.
 
     UINT32 sequenceId;
 
@@ -293,11 +292,11 @@ In Cartesian mode, the pose in the reply is the one computed from whole encoder 
 Sending it back as the target can therefore move the robot by up to about one pulse.
 To keep the robot still, send the same target again, rather than the pose from the reply.
 
-In the absolute modes, the first command of a session is **not** executed (in the incremental modes, it is).
-The reply to the first command reports the position the robot has been commanded to (`previousCommandPositionJoints` / `previousCommandPositionCartesian`), and the next command moves from there.
+As in every mode, the first command of a session is a handshake, and is **not** executed (see [Command Flow](#command-flow)).
+The client doesn't know the position the robot has been commanded to before that, so a position sent then could be too far away.
 Each command after that must be within one cycle's motion of the position the robot has been commanded to: the same limits apply as for the increments (the maximum speed of each joint, 1500 mm/sec, and 360 deg/sec of rotation and of elbow angle).
 A position which is further away ends the session with `InvalidIncrement`.
-So every command must contain the position of every axis of every control group (except a group whose tool it changes in `CARTESIAN_ABSOLUTE`, see above), not only of those which move (ex: start from the positions in the reply to the first command): `0` is a position, not "don't move".
+So every command must contain the position of every axis of every control group (except a group whose tool it changes in `CARTESIAN_ABSOLUTE`, see above), not only of those which move (ex: start from the positions in the reply to the handshake): `0` is a position, not "don't move".
 
 When the robot is slowed down (ex: by the FSU speed limit), it falls behind the commanded positions, and the next position may be further away than one cycle's motion.
 That ends the session with `InvalidIncrement`.
@@ -406,7 +405,7 @@ enum EndReason
     InvalidVersion,       //endDetail: the version received
     InvalidPacketType,    //endDetail: the packetType received
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
-    SequenceGap,          //endDetail: the sequenceId received
+    SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
     MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     InternalError,        //See debug log

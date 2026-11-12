@@ -44,7 +44,7 @@ typedef enum
     EndReason_InvalidVersion,       //endDetail: the version received
     EndReason_InvalidPacketType,    //endDetail: the packetType received
     EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
-    EndReason_SequenceGap,          //endDetail: the sequenceId received
+    EndReason_SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
     EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
     EndReason_InternalError,        //See debug log
@@ -96,7 +96,8 @@ struct RtPacket_
     //when invoking the start_rt_mode service.
     PacketType packetType;
 
-    //Must increment sequentially with each new command packet.
+    //Must increment sequentially with each new command packet. The
+    //first command of a session must be 0.
     UINT32 sequenceId;
 
     //The positions to move to (absolute control modes), or the
