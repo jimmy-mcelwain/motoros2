@@ -11,9 +11,8 @@ The real-time motion control server is intended to be used in a closed loop syst
 It allows the user to command joint positions or TCP poses, or increments of either, at the rate of the robot controller's interpolation clock.
 This control mode minimizes overhead as much as possible by routing the user commands directly to the MotoPlus motion API, mpExRcsIncrementMove.
 
-Note: R/T control has not been tested with robots with fewer than six axes (four and five axis arms, and SCARA robots).
-Seven axis robots have only been tested with simulated servos (dummy servo).
-On five axis robots whose B axis moves automatically to keep the tool level (ex: MPL80/100), a joint increment for B may be relative to that automatic motion, rather than to the physical joint.
+Note: R/T control has not been tested with SCARA robots, four axis robots, or five axis robots whose B axis doesn't move automatically.
+Seven axis robots, and five axis robots whose B axis moves automatically, have only been tested with simulated servos (dummy servo).
 
 ## Activation
 
@@ -225,6 +224,10 @@ For most of them that is `S L U R B T`, but not for all: on a robot whose axes t
 
 Linear axes (ex: base tracks) are in meters.
 
+On five axis robots whose B axis moves automatically to keep the tool level (ex: MPL80/100), joint positions and increments are those of the physical joints, as in `joint_states`: MotoROS2 converts B for the controller.
+So moving L or U without B tilts the tool.
+The controller limits that tilt (ex: to 15 degrees on a PL80, alarm 4420), which ends the session with `MotionRejected`.
+
 #### Cartesian
 
 In the Cartesian modes, the `command` array contains the TCP pose (`CARTESIAN_ABSOLUTE`) or the change of it (`CARTESIAN_INCREMENTS`), in the order `X Y Z` (meters), `Qx Qy Qz Qw` (quaternion), `Re` (radians).
@@ -304,8 +307,6 @@ So a client which plays back a trajectory planned in advance should slow its pla
 That keeps the robot on its path, and several control groups in step with each other (with an FSU speed limit on one of two robots, the controller slowed both of them down).
 A client which computes each position from the commanded position in the reply is never more than one cycle behind.
 
-`JOINT_ABSOLUTE` is not supported for robots whose B axis moves automatically to maintain the orientation of the tool (ex: MPL80/100).
-
 ### Data format (reply)
 
 The reply packet is a *packed* `RtReply` structure.
@@ -322,10 +323,12 @@ Then the flag is set for that reply, and the comparison starts again from the co
 A steady deviation therefore sets the flag again every few cycles (every cycle, if it is larger than the thresholds per cycle).
 Compare the commanded position in the reply with the expected one to see what happened.
 The flag is set if any control group deviates: compare each group's row to see which one did.
+While the robot is slowed down, an axis can also move by a few pulses even with an increment of `0` (seen in `JOINT_INCREMENTS` on the automatic B axis of a PL80).
 When the FSU (or anything else) stops the robot, the session ends with `MotionRejected` instead (the flag may still be set in the last few cycles before that).
 How far the motion may differ before the flag is set is configured with `rt_motion_deviation_threshold_pulses` (joint mode), and `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` (Cartesian mode) in the configuration file.
 In joint mode, the increments are sent in whole pulses, so the commanded position only differs from the expected one when the controller didn't execute them as sent.
 The joint mode threshold is therefore `0` by default: any difference sets the flag.
+(On robots whose B axis moves automatically, B may differ by one more pulse without setting the flag, because the controller rounds its conversion of B differently.)
 
 ```c
 //##########################################################################

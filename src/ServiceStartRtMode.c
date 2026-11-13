@@ -66,28 +66,6 @@ static BOOL Ros_ServiceStartRtMode_IsCartesianSupported(rosidl_runtime_c__String
     return TRUE;
 }
 
-//On robots whose B axis is moved automatically to maintain the orientation (ex: MPL80/100),
-//the commanded B position differs from the position that the controller reports. Absolute
-//joint positions aren't supported for these.
-static BOOL Ros_ServiceStartRtMode_IsAbsoluteJointSupported(rosidl_runtime_c__String* responseMessage)
-{
-    char output[MOTION_START_ERROR_MESSAGE_LENGTH] = { 0 };
-
-    for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
-    {
-        if (g_Ros_Controller.ctrlGroups[groupIndex]->bIsBaxisSlave)
-        {
-            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH,
-                "%s: Absolute joint control mode is not supported for robots with an automatic B axis (group [%d])",
-                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_INVALID_SELECTION), groupIndex);
-            rosidl_runtime_c__String__assign(responseMessage, output);
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
 void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
 {
     StartRtMode_Request* request = (StartRtMode_Request*)request_msg;
@@ -138,8 +116,6 @@ void Ros_ServiceStartRtMode_Trigger(const void* request_msg, void* response_msg)
         response->result_code.value = MOTION_NOT_READY_ERROR;
     }
     else if (mm == MOTION_MODE_RT_CARTESIAN && !Ros_ServiceStartRtMode_IsCartesianSupported(&response->message))
-        response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
-    else if (mm == MOTION_MODE_RT_JOINT && settings.bAbsolute && !Ros_ServiceStartRtMode_IsAbsoluteJointSupported(&response->message))
         response->result_code.value = MOTION_NOT_READY_INVALID_SELECTION;
     else if (mm != MOTION_MODE_INACTIVE)
         response->result_code.value = Ros_MotionControl_StartMotionMode(mm, &settings, &response->message);
