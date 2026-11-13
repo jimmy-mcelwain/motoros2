@@ -44,7 +44,12 @@ void Ros_ServiceStartRtMode_Cleanup()
     MOTOROS2_MEM_TRACE_REPORT(svc_start_rt_mode_fini);
 }
 
-//Cartesian increments are only supported for robots (no positioners or base tracks).
+//Cartesian increments are only supported for robots (no positioners or base tracks) with at
+//least six axes. On robots with fewer (ex: SCARA, palletizers, MPL80/100), the controller
+//doesn't turn the tool by the rotation it is sent, as reported by the controller (on
+//palletizers, Rz turns it the opposite way, even when jogging on the pendant; on a SCARA, Rz
+//does nothing). So the absolute mode would correct the orientation the wrong way, faster
+//each cycle, or never.
 //This is checked here, rather than in the R/T task, so the client is told why the
 //session can't start.
 static BOOL Ros_ServiceStartRtMode_IsCartesianSupported(rosidl_runtime_c__String* responseMessage)
@@ -58,6 +63,16 @@ static BOOL Ros_ServiceStartRtMode_IsCartesianSupported(rosidl_runtime_c__String
             snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH,
                 "%s: Cartesian control mode is only supported when all control groups are robots (group [%d] is not)",
                 Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_INVALID_SELECTION), groupIndex);
+            rosidl_runtime_c__String__assign(responseMessage, output);
+            return FALSE;
+        }
+
+        if (g_Ros_Controller.ctrlGroups[groupIndex]->numAxes < 6)
+        {
+            snprintf(output, MOTION_START_ERROR_MESSAGE_LENGTH,
+                "%s: Cartesian control mode is not supported for robots with fewer than six axes (group [%d] has %d)",
+                Ros_ErrorHandling_MotionNotReadyCode_ToString(MOTION_NOT_READY_INVALID_SELECTION), groupIndex,
+                g_Ros_Controller.ctrlGroups[groupIndex]->numAxes);
             rosidl_runtime_c__String__assign(responseMessage, output);
             return FALSE;
         }

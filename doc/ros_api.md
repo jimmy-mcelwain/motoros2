@@ -146,7 +146,7 @@ The request selects:
 
 - `control_mode`: whether the packets contain joint increments (`JOINT_INCREMENTS`), Cartesian TCP increments (`CARTESIAN_INCREMENTS`), joint positions (`JOINT_ABSOLUTE`) or Cartesian TCP poses (`CARTESIAN_ABSOLUTE`).
   The joint modes are recommended over the Cartesian modes, because their motion is more predictable (see [Activation](rt_control.md#activation)).
-  The Cartesian modes are only supported when every control group is a robot.
+  The Cartesian modes are only supported when every control group is a robot with at least six axes (see [Activation](rt_control.md#activation)).
 - `joint_order`: the order of the joints in the packets (`JOINT_STATES`, the default, or `MOTOMAN`).
   This only makes a difference for robots with seven axes, or with fewer than six.
   See [Joints](rt_control.md#joints).

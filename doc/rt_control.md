@@ -11,8 +11,9 @@ The real-time motion control server is intended to be used in a closed loop syst
 It allows the user to command joint positions or TCP poses, or increments of either, at the rate of the robot controller's interpolation clock.
 This control mode minimizes overhead as much as possible by routing the user commands directly to the MotoPlus motion API, mpExRcsIncrementMove.
 
-Note: R/T control has not been tested with SCARA robots, four axis robots, or five axis robots whose B axis doesn't move automatically.
-Seven axis robots, and five axis robots whose B axis moves automatically, have only been tested with simulated servos (dummy servo).
+Note: seven axis robots, and robots with four or five axes (SCARA robots, palletizers), have only been tested with simulated servos (dummy servo).
+So have several control groups (ex: three robots, a base and a station).
+PFL (HC robots) has not been tested.
 
 ## Activation
 
@@ -33,7 +34,8 @@ In the absolute modes, a lost command or a slowdown of the robot is made up for 
 In the incremental modes, the client has to make up for that itself.
 Choose whichever fits how the client computes its motion.
 
-The Cartesian modes are only supported when every control group is a robot (no positioners or base tracks).
+The Cartesian modes are only supported when every control group is a robot (no positioners or base tracks) with at least six axes.
+On robots with fewer axes (ex: SCARA robots, palletizers), the tool doesn't turn by the rotation it is sent (as measured by the orientation the controller reports), so the orientation can't be controlled.
 
 While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)` (or `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, if it selects joint control in a Cartesian session, or the reverse), and the session continues.
 If the robot isn't ready for motion at that moment (ex: the `Error` bit is set, which doesn't end the session, see [Robot status](#robot-status)), it is rejected with that reason instead (ex: `NOT_READY_ERROR`), and the session continues as well.
