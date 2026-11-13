@@ -34,6 +34,8 @@ static bool Ros_RtMotionControl_AreToolsValid(RtPacket* incomingCommand);
 static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
 static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools, bool* pbDeviation);
 static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS_DATA* moveData);
+static void Ros_RtMotionControl_ToControllerBAxis(MP_EXPOS_DATA* moveData, LONG physicalB[MAX_GROUPS]);
+static void Ros_RtMotionControl_RestorePhysicalBAxis(MP_EXPOS_DATA* moveData, LONG const physicalB[MAX_GROUPS]);
 static void Ros_RtMotionControl_PurgeBufferedPackets();
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static UINT32 Ros_RtMotionControl_WaitForStopCause();
@@ -143,6 +145,10 @@ static int expectedTool[MAX_GROUPS];
 //truncation would accumulate into a steady drift when streaming small increments.
 static double residualIncrement[MAX_GROUPS][MP_GRP_AXES_NUM];
 
+//Joint mode, robots with an automatic B axis: the fraction of a pulse of the B increment which
+//was converted for the controller, but not sent (see Ros_RtMotionControl_ToControllerBAxis)
+static double residualAutomaticB[MAX_GROUPS];
+
 //Task to receive increments from the R/T client and pass them to the motion API
 void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK priority task
 {
@@ -183,6 +189,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
     bzero(prevRtCmdPosition, sizeof(prevRtCmdPosition));
     bzero(residualIncrement, sizeof(residualIncrement));
+    bzero(residualAutomaticB, sizeof(residualAutomaticB));
 
     if (mode == MOTION_MODE_RT_JOINT)
         Ros_RtMotionControl_InitJointSpace(&moveData);
@@ -357,8 +364,13 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             }
 
             // Send increment to robot
+            LONG physicalB[MAX_GROUPS];
+            if (mode == MOTION_MODE_RT_JOINT)
+                Ros_RtMotionControl_ToControllerBAxis(&moveData, physicalB);
             int ret = mpExRcsIncrementMove(&moveData);
             cycleTimes.moved = tickGet();
+            if (mode == MOTION_MODE_RT_JOINT)
+                Ros_RtMotionControl_RestorePhysicalBAxis(&moveData, physicalB);
             if (ret != OK)
             {
                 Ros_Debug_BroadcastMsg("WARN: mpExRcsIncrementMove returned %d", ret);
@@ -882,6 +894,50 @@ static bool Ros_RtMotionControl_IsFinite(double value)
     return (value - value) == 0.0;
 }
 
+//On robots whose B axis is moved automatically to maintain the orientation of the tool (ex:
+//MPL80/100), the controller moves B by the increment it is sent, plus the increment of L, minus
+//the increment of U. Every position it reports (mpGetPulsePos, mpGetFBPulsePos) is the physical
+//position, like joint_states. So MotoROS2 works with physical increments, and converts B only for
+//mpExRcsIncrementMove: B - L + U (in radians). This replaces the B increment of moveData with the
+//one for the controller, and stores the physical one in physicalB, so it can be put back after
+//the call. The fraction of a pulse which isn't sent is carried over to the next cycle.
+static void Ros_RtMotionControl_ToControllerBAxis(MP_EXPOS_DATA* moveData, LONG physicalB[MAX_GROUPS])
+{
+    for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        CtrlGroup* ctrlGroup = g_Ros_Controller.ctrlGroups[groupNo];
+        if (!ctrlGroup->bIsBaxisSlave)
+            continue;
+
+        //Motoman order: S L U R B T. Pulses per radian.
+        LONG* increment = moveData->grp_pos_info[groupNo].pos;
+        double const* ptoR = ctrlGroup->pulseToRad.PtoR;
+
+        double controllerB = increment[4] - (increment[1] * ptoR[4] / ptoR[1]) + (increment[2] * ptoR[4] / ptoR[2]);
+
+        physicalB[groupNo] = increment[4];
+        increment[4] = Ros_RtMotionControl_TakeWholeUnits(controllerB, &residualAutomaticB[groupNo]);
+    }
+}
+
+static void Ros_RtMotionControl_RestorePhysicalBAxis(MP_EXPOS_DATA* moveData, LONG const physicalB[MAX_GROUPS])
+{
+    for (int groupNo = 0; groupNo < g_Ros_Controller.numGroup; groupNo += 1)
+    {
+        if (g_Ros_Controller.ctrlGroups[groupNo]->bIsBaxisSlave)
+            moveData->grp_pos_info[groupNo].pos[4] = physicalB[groupNo];
+    }
+}
+
+//How far the commanded position of an axis can be from the pulses which were sent, without them
+//having been changed. B of a robot with an automatic B axis can be one pulse off for a cycle,
+//because the controller rounds its own conversion differently from MotoROS2 (see
+//Ros_RtMotionControl_ToControllerBAxis).
+static LONG Ros_RtMotionControl_RoundingAllowance(CtrlGroup* ctrlGroup, int axis)
+{
+    return (ctrlGroup->bIsBaxisSlave && axis == 4) ? 1 : 0;
+}
+
 //out = a * b
 static void Ros_RtMotionControl_QuatMultiply(const Quaternion* a, const Quaternion* b, Quaternion* out)
 {
@@ -1193,8 +1249,9 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
         //================================================================================
         //CMD pos
         //================================================================================
-        //Not Ros_CtrlGroup_GetPulsePosCmd. That is only for converting incoming absolute
-        //positions. See https://github.com/Yaskawa-Global/motoros2/discussions/455
+        //Not Ros_CtrlGroup_GetPulsePosCmd: on robots with an automatic B axis (ex: MPL80/100),
+        //it returns B in the controller's convention (B - L + U), for the trajectory modes. R/T
+        //reports the physical B, like joint_states. (See Ros_RtMotionControl_ToControllerBAxis.)
         //rad (or meter for linear track). If it can't be read, it is left at 0.
         ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
         if (mpGetPulsePos(&ctrlGroup, &cmdPulse) == OK)
@@ -1323,8 +1380,9 @@ static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* t
 
         if (mode == MOTION_MODE_RT_JOINT)
         {
-            //Not Ros_CtrlGroup_GetPulsePosCmd. That is only for converting incoming absolute
-            //positions. See https://github.com/Yaskawa-Global/motoros2/discussions/455
+            //Not Ros_CtrlGroup_GetPulsePosCmd: on robots with an automatic B axis, it returns B in
+            //the controller's convention. This works with the physical B, like the increments sent.
+            //(See Ros_RtMotionControl_ToControllerBAxis.)
             ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
             if (mpGetPulsePos(&ctrlGroup, &cmdPulse) != OK)
             {
@@ -1336,7 +1394,8 @@ static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* t
             //pulses. Nothing to check on the first command: it starts from the position read.
             for (int axis = 0; axis < MP_GRP_AXES_NUM && bExpectedPulsesRead; axis += 1)
             {
-                if (abs(cmdPulse.lPos[axis] - expectedPulses[groupIndex][axis]) > g_nodeConfigSettings.rt_motion_deviation_threshold_pulses)
+                if (abs(cmdPulse.lPos[axis] - expectedPulses[groupIndex][axis]) >
+                    g_nodeConfigSettings.rt_motion_deviation_threshold_pulses + Ros_RtMotionControl_RoundingAllowance(g_Ros_Controller.ctrlGroups[groupIndex], axis))
                     bGroupDeviates = true;
             }
 
