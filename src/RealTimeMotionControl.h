@@ -46,8 +46,8 @@ typedef enum
     EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     EndReason_SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
-    EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
-    EndReason_InternalError,        //See debug log
+    EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped (ex: E-stop, HOLD), its drives are off, it left REMOTE mode, or the job stopped, after an accepted increment or while waiting for a command. -20 (energy saving mode) also when MotoROS2 didn't send the increment
+    EndReason_InternalError,        //See debug log (ex: the robot's status couldn't be read)
     EndReason_CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 } EndReason;
 
@@ -61,6 +61,7 @@ typedef enum
     RobotStatus_PlayMode        = (1 << 5),     //Pendant is in PLAY or REMOTE mode (not TEACH)
     RobotStatus_PflActive       = (1 << 6),     //PFL has stopped the robot, or is escaping/avoiding (HC robots only)
     RobotStatus_RemoteMode      = (1 << 7),     //Pendant is in REMOTE mode
+    RobotStatus_JobRunning      = (1 << 8),     //The job is running (not held or stopped). It stays stopped after a short HOLD is released.
 } RobotStatusBits;
 
 //The number of control groups in a packet. Unused groups are ignored.

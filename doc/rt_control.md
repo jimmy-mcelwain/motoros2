@@ -79,10 +79,10 @@ Instead, the latest reply is sent again, so a client whose reply was lost can re
 If a command is not received within `timeout_for_rt_msg` (default: 5 seconds; `-1`: never), then the session times out and is dropped.
 To keep the session alive while the robot stands still, keep sending commands: the same position in the absolute modes, or zero increments in the incremental modes.
 These commands also keep the controller's energy saving mode from engaging.
-If the robot is already in energy saving mode, `start_rt_mode` takes it out of it.
 While no commands arrive (ex: with `timeout_for_rt_msg` set to `-1`), energy saving mode can engage during a session.
-The next command then ends the session with `MotionRejected` (`endDetail` `-20`), and is not executed: `robotStatus` shows `DrivesPowered` cleared.
-Call `stop_traj_mode` and then `start_rt_mode`, which takes the robot out of energy saving mode.
+The session then ends with `MotionRejected` (`endDetail` `-20`), within 100 milliseconds, and nothing more is executed: `robotStatus` shows `DrivesPowered` cleared.
+A command which arrives in that time is not executed either: the session ends the same way.
+`start_rt_mode` takes the robot out of energy saving mode, so it can be called right away to start a new session (on a GP12, it returned after about 1.5 seconds).
 
 The session is also dropped if:
 
@@ -92,8 +92,9 @@ The session is also dropped if:
 - the first command's `sequenceId` is not `0`, or the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
 - a command is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
 - a `toolIndex` is not `0` - `63`
-- the robot rejects the motion, or stops (ex: E-stop, HOLD, alarm, PFL, servo power off)
+- the robot rejects the motion, or stops (ex: E-stop, HOLD, alarm, PFL, servo power off, energy saving mode)
 - the pendant leaves REMOTE mode (ex: it is switched to PLAY or TEACH)
+- MotoROS2 can't read the robot's status or position, or receiving from the R/T port fails (`InternalError`)
 - `stop_traj_mode` is called, or the micro-ROS agent disconnects
 
 The R/T port accepts packets on every network interface of the controller, and there is no authentication.
@@ -105,7 +106,7 @@ So make sure that no other host sends packets to the R/T port while a session is
 MotoROS2 notices that the micro-ROS agent disconnected after a few seconds (ex: 4 to 8 seconds on a YRC1000).
 Until then, the session goes on, but replies may come late.
 A restart of the agent within a few seconds may not be noticed at all: the session then goes on, but MotoROS2's services, `stop_traj_mode` included, stay unavailable, so stop sending commands to end the session (`Timeout`).
-With `timeout_for_rt_msg` set to `-1`, the session then doesn't end by itself: only a command which the robot rejects ends it (ex: one sent while the robot is held). This has not been tested.
+With `timeout_for_rt_msg` set to `-1`, the session then only ends when the robot stops or leaves REMOTE mode (ex: press HOLD, see [Robot status](#robot-status)).
 
 When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why.
 See [Session end](#session-end).
@@ -412,8 +413,8 @@ enum EndReason
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
-    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped anyway or left REMOTE mode (ex: E-stop, HOLD)
-    InternalError,        //See debug log
+    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped (ex: E-stop, HOLD), its drives are off, it left REMOTE mode, or the job stopped, after an accepted increment or while waiting for a command. -20 (energy saving mode) also when MotoROS2 didn't send the increment
+    InternalError,        //See debug log (ex: the robot's status couldn't be read)
     CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 }
 ```
@@ -424,14 +425,14 @@ For `MotionRejected`, `endDetail` is the return code of `mpExRcsIncrementMove`, 
 
 | `endDetail` | Meaning |
 | ----------- | ------- |
-| `0` | The increment was accepted, but the robot stopped anyway (ex: E-stop, HOLD), or the pendant left REMOTE mode. See `robotStatus` for the cause. |
+| `0` | The robot stopped (ex: E-stop, HOLD), its drives are off, the pendant left REMOTE mode, or the job stopped: after the controller accepted the increment, or while no commands arrived. See `robotStatus` for the cause. |
 | `-1` | The job is not executing its `WAIT` instruction (ex: an alarm or HOLD stopped it). See `robotStatus` for the cause. |
 | `-2` | No job is running |
 | `-8` | The control group is being jogged |
 | `-9` | The control group is executing a move instruction |
 | `-13` | Another job is using the control group |
 | `-19` | PFL is active (`E_EXRCS_PFL_FUNC_BUSY`, HC robots; not tested) |
-| `-20` | Energy saving mode is active (`E_EXRCS_UNDER_ENERGY_SAVING`): the drives are off (`DrivesPowered` cleared) (see [Command Flow](#command-flow)) |
+| `-20` | Energy saving mode is active (`E_EXRCS_UNDER_ENERGY_SAVING`): the drives are off (`DrivesPowered` cleared). MotoROS2 also ends the session with this value when energy saving mode engages (see [Command Flow](#command-flow)) |
 
 The other return codes (`-3` - `-7`, `-10` - `-12`) are errors in data which MotoROS2 sets, and should not occur.
 `-19` and `-20` aren't defined in the MotoPlus SDK headers (MotoROS2 defines them).
@@ -451,18 +452,26 @@ enum RobotStatusBits
     PlayMode        = (1 << 5),     //Pendant is in PLAY or REMOTE mode (not TEACH)
     PflActive       = (1 << 6),     //PFL has stopped the robot, or is escaping/avoiding (HC robots only)
     RemoteMode      = (1 << 7),     //Pendant is in REMOTE mode
+    JobRunning      = (1 << 8),     //The job is running (not held or stopped)
 }
 ```
 
-While a session is active, the robot is necessarily powered, in REMOTE mode, and free of E-stops and alarms (the session ends otherwise, see below).
+While a session is active, the robot is necessarily powered, in REMOTE mode, free of E-stops and alarms, and its job is running (the session ends otherwise, see below).
 An error (ex: a wrong password entered on the pendant) sets `Error`, but doesn't stop the robot, so the session goes on.
 These bits are most useful in the `SessionEnded` reply, to determine why the robot rejected motion (`MotionRejected`).
 The controller doesn't always reject the motion when the robot stops: on HOLD, `mpExRcsIncrementMove` can keep returning OK while the job is held, so every increment is accepted but not executed, even after HOLD is released (the job stays held).
-So the session also ends with `MotionRejected` (`endDetail` `0`) when the status shows an E-stop, HOLD, an alarm or PFL, or the job is no longer running.
+So the session also ends with `MotionRejected` (`endDetail` `0`) when the status shows an E-stop, HOLD, an alarm or PFL, the drives are off (`DrivesPowered` cleared), or the job is no longer running.
 It also ends this way when the pendant leaves REMOTE mode (ex: it is switched to PLAY or TEACH): in PLAY mode, the controller keeps executing the increments, but MotoROS2 only allows motion in REMOTE mode.
+While no commands arrive, MotoROS2 checks the status every 100 milliseconds, and once more before it executes the command which ends that wait, so the session ends the same way then (except for energy saving mode, see [Command Flow](#command-flow)).
+A command which arrives sooner is executed without another check: the status was read after the previous command.
+If the status can't be read, the session ends with `InternalError`: MotoROS2 can't tell then whether the robot stopped.
 The controller rejects the motion before its status shows why (ex: HOLD can take a few cycles to appear).
 So after `MotionRejected`, the final reply waits until the cause appears in the status, for up to 200 milliseconds.
 After an E-stop, the final reply can still show `DrivesPowered`: the controller stops the robot first, and switches the servo power off a moment later (about 0.5 seconds on a GP12).
+Likewise, the final reply can still show `JobRunning` together with the cause (ex: after an E-stop, always; after HOLD, sometimes): the job stops a few cycles after the cause appears (about 15 to 30 milliseconds on a GP12).
+So use the cause bits, not `JobRunning`, to tell why the robot stopped.
+A short HOLD can be released before MotoROS2 reads the status, so the final reply doesn't show `Hold`.
+The job stays stopped after HOLD is released, though, so the reply then shows `JobRunning` cleared.
 For complete controller status (ex: alarm codes), use the [robot_status](ros_api.md#robot_status) topic.
 
 If the session ends before the first command was accepted, the final reply is only sent if a packet was rejected, and it is sent to the host which sent that packet.

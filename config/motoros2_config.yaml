@@ -344,8 +344,9 @@ publisher_qos:
 # amount of time (unless it is '-1'), then it should be assumed that the
 # session is dead.
 #
-# Setting this to '-1' will never timeout. In that case, you must explicitly
-# call '/stop_traj_mode' to end the session.
+# Setting this to '-1' will never timeout. In that case, the session only ends
+# when '/stop_traj_mode' is called, or the robot stops or leaves REMOTE mode
+# (ex: HOLD, or energy saving mode engaging while no commands arrive).
 #
 # Must be '-1' or greater than 0. Otherwise an alarm is raised and the
 # default is used.
