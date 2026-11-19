@@ -37,12 +37,24 @@ static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS
 static void Ros_RtMotionControl_ToControllerBAxis(MP_EXPOS_DATA* moveData, LONG physicalB[MAX_GROUPS]);
 static void Ros_RtMotionControl_RestorePhysicalBAxis(MP_EXPOS_DATA* moveData, LONG const physicalB[MAX_GROUPS]);
 static void Ros_RtMotionControl_PurgeBufferedPackets();
+static BOOL Ros_RtMotionControl_ReadStatus(UINT32* pStatus, BOOL* pbEcoMode);
 static UINT32 Ros_RtMotionControl_ReadRobotStatus();
 static UINT32 Ros_RtMotionControl_WaitForStopCause();
-static BOOL Ros_RtMotionControl_IsJobRunning();
 static EndReason Ros_RtMotionControl_DiscardEarlyPackets(const struct sockaddr_in* commander, UINT32 executedSequenceId, int* endDetail);
 static EndReason Ros_RtMotionControl_MultipleSources(const struct sockaddr_in* commander, const struct sockaddr_in* sender, int* endDetail);
-static int Ros_RtMotionControl_WaitForPacket();
+
+//The result of Ros_RtMotionControl_CheckStatus
+typedef enum
+{
+    StatusCheck_Ok,
+    StatusCheck_EcoMode,        //Energy saving mode is active
+    StatusCheck_Stopped,        //The robot stopped, its drives are off, it left PLAY/REMOTE mode, or the job isn't running
+    StatusCheck_ReadFailed,     //The status couldn't be read
+} StatusCheck;
+
+static StatusCheck Ros_RtMotionControl_CheckStatus(UINT32* pStatus);
+static EndReason Ros_RtMotionControl_StatusCheckEnd(StatusCheck check, UINT32 status, const char* when, int* pEndDetail);
+static int Ros_RtMotionControl_WaitForPacket(StatusCheck* pCheck, UINT32* pRobotStatus);
 static double Ros_RtMotionControl_RotationAngle(const Quaternion* from, const Quaternion* to);
 
 //Timing of one R/T cycle, in system clock ticks. Used to find out where a cycle loses time.
@@ -93,12 +105,15 @@ static void Ros_RtMotionControl_LogCycleTiming(const RtTimingStats* stats);
 #define RT_STOP_WAIT_TIMEOUT_MS     1000
 //How long to wait for the cause of a rejected increment to appear in the robot's status
 #define RT_STOP_CAUSE_WAIT_MS       200
-//The pendant modes the session requires. Like Ros_Controller_GetNotReadySubcode, REMOTE mode is not
-//required in DUMMY_SERVO_MODE builds.
+//The pendant modes the session requires, and with them, the status it requires after each
+//increment. Like Ros_Controller_GetNotReadySubcode and Ros_MotionControl_StartMotionMode,
+//DUMMY_SERVO_MODE builds require neither REMOTE mode nor servo power.
 #ifndef DUMMY_SERVO_MODE
 #define RT_REQUIRED_MODES           (RobotStatus_PlayMode | RobotStatus_RemoteMode)
+#define RT_REQUIRED_STATUS          (RT_REQUIRED_MODES | RobotStatus_DrivesPowered)
 #else
 #define RT_REQUIRED_MODES           (RobotStatus_PlayMode)
+#define RT_REQUIRED_STATUS          (RT_REQUIRED_MODES)
 #endif
 //The status bits which show that the robot stopped
 #define RT_STOPPED_STATUS           (RobotStatus_EStopped | RobotStatus_Hold | RobotStatus_Alarm | RobotStatus_PflActive)
@@ -213,7 +228,8 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
     //=========================================================================================
     while (TRUE)
     {
-        int waitResult = Ros_RtMotionControl_WaitForPacket();
+        StatusCheck waitCheck;
+        int waitResult = Ros_RtMotionControl_WaitForPacket(&waitCheck, &robotStatus);
         if (waitResult > 0)
         {
             client_addr_len = sizeof(client_addr);
@@ -291,6 +307,17 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             //Only the IP address identifies the commander. The port can change if the client
             //reopens its socket, so keep the latest one for the final reply.
             previous_client_addr = client_addr;
+
+            //The command arrived after a wait, and the status changed meanwhile (see
+            //Ros_RtMotionControl_WaitForPacket). Ex: energy saving mode engaged. The controller would
+            //reject the command (E_EXRCS_UNDER_ENERGY_SAVING), but that would also start its wake-up,
+            //which start_rt_mode can't turn the servos on during. So it isn't sent at all.
+            if (waitCheck != StatusCheck_Ok)
+            {
+                endReason = Ros_RtMotionControl_StatusCheckEnd(waitCheck, robotStatus, "before executing a command", &endDetail);
+                bEndReplyToSender = true;
+                break; //drop the connection
+            }
 
             //Check for old or same sequence ID (wraparound safe)
             if (((int32_t)(incomingCommand.sequenceId - previousSequenceId) <= 0) && !bFirstRecv)
@@ -416,21 +443,14 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
             //Read the status for the next reply now, while the client is computing its next
             //command, so it doesn't delay the reply.
-            robotStatus = Ros_RtMotionControl_ReadRobotStatus();
-
             //The controller doesn't always reject the increment when the robot stops. (ex: On
             //HOLD, it can accept the increment and hold the job anyway. It then accepts every
             //increment and ignores it, even after HOLD is released.) So the session also ends
-            //when the status shows a stop, or the job isn't running. (PFL can stop the robot while the
-            //job stays on its WAIT.)
-            //The controller keeps executing increments after the pendant leaves REMOTE mode, but
-            //MotoROS2 only allows motion in REMOTE mode. So the session ends then too.
-            if ((robotStatus & RT_STOPPED_STATUS) ||
-                ((robotStatus & RT_REQUIRED_MODES) != RT_REQUIRED_MODES) || !Ros_RtMotionControl_IsJobRunning())
+            //when the status shows a stop.
+            StatusCheck check = Ros_RtMotionControl_CheckStatus(&robotStatus);
+            if (check != StatusCheck_Ok)
             {
-                Ros_Debug_BroadcastMsg("WARN: The robot stopped or left PLAY/REMOTE mode, but mpExRcsIncrementMove accepted the increment (status 0x%02X)", robotStatus);
-                endReason = EndReason_MotionRejected;
-                endDetail = 0;
+                endReason = Ros_RtMotionControl_StatusCheckEnd(check, robotStatus, "after mpExRcsIncrementMove accepted the increment", &endDetail);
                 break; //drop the connection
             }
 
@@ -449,6 +469,11 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
             {
                 Ros_Debug_BroadcastMsg("Stop requested");
                 endReason = EndReason_StopRequested;
+            }
+            else if (waitCheck != StatusCheck_Ok)
+            {
+                //End the session without sending another increment (ex: in energy saving mode, see above)
+                endReason = Ros_RtMotionControl_StatusCheckEnd(waitCheck, robotStatus, "while waiting for a command", &endDetail);
             }
             else
             {
@@ -499,14 +524,24 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 //the session has been asked to stop. This allows the task to exit on its own,
 //instead of being deleted while it is blocked on the socket.
 //
-//Returns >0 if a packet is available, 0 on timeout or stop request, and <0 on error.
-static int Ros_RtMotionControl_WaitForPacket()
+//While no commands arrive, the robot's status is checked (Ros_RtMotionControl_CheckStatus) each
+//time the wait goes on, so the session also ends then when the robot stops or energy saving mode
+//engages. It is also checked when a packet arrives after a wait. (Commands keep energy saving mode
+//from engaging, and the status is checked after each one, so this is only needed after a wait.)
+//*pCheck is the result, and *pRobotStatus the status read, if it was checked.
+//
+//Returns >0 if a packet is available, 0 on timeout, stop request or when *pCheck isn't
+//StatusCheck_Ok (without a packet), and <0 on error.
+static int Ros_RtMotionControl_WaitForPacket(StatusCheck* pCheck, UINT32* pRobotStatus)
 {
     struct fd_set fds;
     struct timeval tv;
     int remaining_ms = g_nodeConfigSettings.timeout_for_rt_msg; //-1 never times out
     int slice_ms;
     int ret;
+    BOOL bWaited = FALSE;
+
+    *pCheck = StatusCheck_Ok;
 
     while (!bRtStopRequested)
     {
@@ -522,7 +557,16 @@ static int Ros_RtMotionControl_WaitForPacket()
 
         ret = mpSelect(sockRtCommandListener + 1, &fds, NULL, NULL, &tv);
         if (ret != 0)
+        {
+            if (ret > 0 && bWaited)
+                *pCheck = Ros_RtMotionControl_CheckStatus(pRobotStatus);
             return ret;
+        }
+        bWaited = TRUE;
+
+        *pCheck = Ros_RtMotionControl_CheckStatus(pRobotStatus);
+        if (*pCheck != StatusCheck_Ok)
+            return 0;
 
         if (remaining_ms != -1)
         {
@@ -1617,15 +1661,23 @@ static void Ros_RtMotionControl_LogCycleTiming(const RtTimingStats* stats)
         Ros_Debug_BroadcastMsg("R/T timing: only the first %d are listed", RT_TIMING_MAX_EVENTS);
 }
 
-//Reads the robot's state into a bitfield of RobotStatusBits
-static UINT32 Ros_RtMotionControl_ReadRobotStatus()
+//Reads the robot's state into a bitfield of RobotStatusBits (*pStatus), and whether energy saving
+//mode is active.
+//
+//Returns FALSE if the status can't be read. *pStatus is then 0.
+static BOOL Ros_RtMotionControl_ReadStatus(UINT32* pStatus, BOOL* pbEcoMode)
 {
     USHORT ioStatus[IO_ROBOTSTATUS_MAX];
     UINT32 status = 0;
 
+    *pStatus = 0;
+    *pbEcoMode = FALSE;
+
     //Read into a local array. g_Ros_Controller.ioStatus is only updated while the agent is connected.
     if (!Ros_Controller_StatusRead(ioStatus))
-        return 0;
+        return FALSE;
+
+    *pbEcoMode = (ioStatus[IO_ROBOTSTATUS_INECOMODE] != 0);
 
     if (ioStatus[IO_ROBOTSTATUS_SERVO] != 0 && ioStatus[IO_ROBOTSTATUS_INECOMODE] == 0)
         status |= RobotStatus_DrivesPowered;
@@ -1652,7 +1704,72 @@ static UINT32 Ros_RtMotionControl_ReadRobotStatus()
     if (Ros_Controller_IsPflActiveInStatus(ioStatus))
         status |= RobotStatus_PflActive;
 
+    if (ioStatus[IO_ROBOTSTATUS_OPERATING] != 0)
+        status |= RobotStatus_JobRunning;
+
+    *pStatus = status;
+    return TRUE;
+}
+
+//Reads the robot's state into a bitfield of RobotStatusBits, for a reply. Returns 0 if it can't be read.
+static UINT32 Ros_RtMotionControl_ReadRobotStatus()
+{
+    UINT32 status;
+    BOOL bEcoMode;
+
+    Ros_RtMotionControl_ReadStatus(&status, &bEcoMode);
     return status;
+}
+
+//Reads the robot's status into *pStatus, and returns whether the session can go on:
+//- StatusCheck_EcoMode if energy saving mode is active. (Checked first: it also clears
+//  DrivesPowered.)
+//- StatusCheck_Stopped if the status shows a stop (PFL can stop the robot while the job stays on
+//  its WAIT), the drives are off, the pendant left PLAY or REMOTE mode, or the job isn't running.
+//  The controller keeps executing increments after the pendant leaves REMOTE mode, but MotoROS2
+//  only allows motion in REMOTE mode.
+//- StatusCheck_ReadFailed if the status can't be read. Then it isn't known whether the robot
+//  stopped, so the session ends too.
+static StatusCheck Ros_RtMotionControl_CheckStatus(UINT32* pStatus)
+{
+    BOOL bEcoMode;
+
+    if (!Ros_RtMotionControl_ReadStatus(pStatus, &bEcoMode))
+        return StatusCheck_ReadFailed;
+
+    if (bEcoMode)
+        return StatusCheck_EcoMode;
+
+    //JobRunning isn't in RT_REQUIRED_STATUS: Ros_RtMotionControl_WaitForStopCause stops waiting
+    //when a required bit clears, and the job can stop before its cause (ex: HOLD) appears
+    if ((*pStatus & RT_STOPPED_STATUS) || ((*pStatus & RT_REQUIRED_STATUS) != RT_REQUIRED_STATUS) ||
+        !(*pStatus & RobotStatus_JobRunning))
+        return StatusCheck_Stopped;
+
+    return StatusCheck_Ok;
+}
+
+//Logs why a status check (other than StatusCheck_Ok) ends the session, and returns the EndReason.
+//Sets *pEndDetail for MotionRejected: E_EXRCS_UNDER_ENERGY_SAVING, as the controller would have
+//returned, or 0. "when" says where the check was made.
+static EndReason Ros_RtMotionControl_StatusCheckEnd(StatusCheck check, UINT32 status, const char* when, int* pEndDetail)
+{
+    switch (check)
+    {
+    case StatusCheck_EcoMode:
+        Ros_Debug_BroadcastMsg("WARN: Energy saving mode is active (checked %s)", when);
+        *pEndDetail = E_EXRCS_UNDER_ENERGY_SAVING;
+        return EndReason_MotionRejected;
+
+    case StatusCheck_Stopped:
+        Ros_Debug_BroadcastMsg("WARN: The robot stopped, its drives are off, it left PLAY/REMOTE mode, or the job stopped (checked %s, status 0x%03X)", when, status);
+        *pEndDetail = 0;
+        return EndReason_MotionRejected;
+
+    default:
+        Ros_Debug_BroadcastMsg("ERROR: Reading the robot's status failed (checked %s)", when);
+        return EndReason_InternalError;
+    }
 }
 
 //The motion API rejects an increment before the controller's status signals show why.
@@ -1666,11 +1783,10 @@ static UINT32 Ros_RtMotionControl_WaitForStopCause()
     //The same causes as Ros_RtMotionControl_CheckStatus, and an error, which can also explain
     //why an increment was rejected
     const UINT32 stopCauses = RT_STOPPED_STATUS | RobotStatus_Error;
-    const UINT32 requiredForMotion = RobotStatus_DrivesPowered | RT_REQUIRED_MODES;
     UINT32 status = Ros_RtMotionControl_ReadRobotStatus();
     int waited_ms = 0;
 
-    while (!(status & stopCauses) && ((status & requiredForMotion) == requiredForMotion) &&
+    while (!(status & stopCauses) && ((status & RT_REQUIRED_STATUS) == RT_REQUIRED_STATUS) &&
            waited_ms < RT_STOP_CAUSE_WAIT_MS && !bRtStopRequested)
     {
         mpClkAnnounce(MP_INTERPOLATION_CLK);
@@ -1679,16 +1795,4 @@ static UINT32 Ros_RtMotionControl_WaitForStopCause()
     }
 
     return status;
-}
-
-//Returns whether the robot job is running (not held or stopped). If the signal can't be read,
-//returns TRUE, so a read error doesn't end the session.
-static BOOL Ros_RtMotionControl_IsJobRunning()
-{
-    USHORT operating = 0;
-
-    if (mpReadIO(&g_Ros_Controller.ioStatusAddr[IO_ROBOTSTATUS_OPERATING], &operating, 1) != 0)
-        return TRUE;
-
-    return (operating != 0);
 }
