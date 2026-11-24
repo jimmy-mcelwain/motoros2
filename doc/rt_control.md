@@ -194,8 +194,9 @@ struct RtPacket
 ```
 
 The `version` must match the version number expected by the server.
-If it does not match, the session ends (`InvalidVersion`).
+If it does not match, the session ends (`InvalidVersion`), and `endDetail` is the version MotoROS2 expects.
 The current version is `2`.
+Every reply starts with this version (`version`), so a client can check which version the controller uses, even if the rest of the reply isn't laid out as it expects.
 
 The `packetType` must be the same as the `control_mode`:
 
@@ -313,7 +314,7 @@ A client which computes each position from the commanded position in the reply i
 ### Data format (reply)
 
 The reply packet is a *packed* `RtReply` structure.
-This will echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
+This will report the version, echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
 
 Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increments up to the **previous** command cycle as sent.
 Ex: the Functional Safety Unit (FSU) speed limit truncated them, or the controller changed them near a singularity (see above).
@@ -339,6 +340,12 @@ The joint mode threshold is therefore `0` by default: any difference sets the fl
 //##########################################################################
 struct RtReply
 {
+    //The version of the R/T interface which MotoROS2 implements.
+    //It is first, so a client can read it even if the rest of the
+    //reply isn't laid out as it expects.
+
+    int version;
+
     UINT32 sequenceEcho;
 
     //See ReplyType enum.
@@ -408,7 +415,7 @@ enum EndReason
     StopRequested,        //stop_traj_mode was called, or the micro-ROS agent disconnected
     Timeout,              //No command was received within timeout_for_rt_msg
     InvalidPacketSize,    //endDetail: the number of bytes received
-    InvalidVersion,       //endDetail: the version received
+    InvalidVersion,       //endDetail: the version MotoROS2 expects
     InvalidPacketType,    //endDetail: the packetType received
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
@@ -493,7 +500,7 @@ The field sizes are:
 | Structure | Size (bytes) | Python `struct` format |
 | --------- | ------------ | ---------------------- |
 | `RtPacket` | 620 | `<iiI64d8i64x` |
-| `RtReply` | 2069 | `<IIIiI256d?` |
+| `RtReply` | 2073 | `<iIIIiI256d?` |
 
 `MAX_GROUPS` and `MP_GRP_AXES_NUM` are both `8`.
 Unused groups and axes are ignored (set them to `0`).
