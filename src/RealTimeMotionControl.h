@@ -41,7 +41,7 @@ typedef enum
     EndReason_StopRequested,        //stop_traj_mode was called, or the micro-ROS agent disconnected
     EndReason_Timeout,              //No command was received within timeout_for_rt_msg
     EndReason_InvalidPacketSize,    //endDetail: the number of bytes received
-    EndReason_InvalidVersion,       //endDetail: the version received
+    EndReason_InvalidVersion,       //endDetail: the version MotoROS2 expects (VERSION_REAL_TIME_INTERFACE)
     EndReason_InvalidPacketType,    //endDetail: the packetType received
     EndReason_MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     EndReason_SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
@@ -131,6 +131,11 @@ typedef struct RtPacket_ RtPacket;
 
 struct RtReply_
 {
+    //The version of the R/T interface which MotoROS2 implements (VERSION_REAL_TIME_INTERFACE).
+    //It is first, so a client can read it even if the rest of the reply isn't laid out as it
+    //expects.
+    int version;
+
     UINT32 sequenceEcho;
 
     //See ReplyType enum.

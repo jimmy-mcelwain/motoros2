@@ -13,7 +13,7 @@
 //The sizes of the packets, as documented in doc/rt_control.md (Wire format). Clients rely on them.
 //(Fails to compile otherwise: an array can't have a negative size.)
 typedef char RtPacketSizeIsAsDocumented[(sizeof(RtPacket) == 620) ? 1 : -1];
-typedef char RtReplySizeIsAsDocumented[(sizeof(RtReply) == 2069) ? 1 : -1];
+typedef char RtReplySizeIsAsDocumented[(sizeof(RtReply) == 2073) ? 1 : -1];
 
 //The packetType of a command must be the same as the control_mode of the session.
 //(Fails to compile otherwise: an array can't have a negative size.)
@@ -267,7 +267,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
                 Ros_Debug_BroadcastMsg("ERROR: The command packet is version [%d]. It must be version [%d]",
                                         incomingCommand.version, VERSION_REAL_TIME_INTERFACE);
                 endReason = EndReason_InvalidVersion;
-                endDetail = incomingCommand.version;
+                endDetail = VERSION_REAL_TIME_INTERFACE;
                 bEndReplyToSender = true;
                 break; //drop the connection
             }
@@ -502,7 +502,10 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         struct sockaddr_in* endDestination = bFirstRecv ? &client_addr : &previous_client_addr;
 
         if (bFirstRecv)
+        {
             bzero(&outgoingReply, sizeof(outgoingReply)); //nothing has been executed yet
+            outgoingReply.version = VERSION_REAL_TIME_INTERFACE;
+        }
         else
             (void)Ros_RtMotionControl_PopulateReplyMessage(mode, &lastExecutedCommand, &outgoingReply); //sent anyway: the end reason is what matters
 
@@ -1260,6 +1263,7 @@ static bool Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
 
     bzero(reply, sizeof(RtReply));
 
+    reply->version = VERSION_REAL_TIME_INTERFACE;
     reply->sequenceEcho = command->sequenceId;
 
     for (int groupIndex = 0; groupIndex < g_Ros_Controller.numGroup; groupIndex += 1)
