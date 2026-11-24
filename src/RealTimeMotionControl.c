@@ -31,7 +31,7 @@ static void Ros_RtMotionControl_Handshake(MOTION_MODE mode, RtPacket* incomingCo
 static bool Ros_RtMotionControl_ParseJointAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_ParseCartesianAbsolute(RtPacket* incomingCommand, MP_EXPOS_DATA* moveData);
 static bool Ros_RtMotionControl_AreToolsValid(RtPacket* incomingCommand);
-static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
+static bool Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply);
 static bool Ros_RtMotionControl_CheckForMotionDeviation(MOTION_MODE mode, int* tools, bool* pbDeviation);
 static void Ros_RtMotionControl_AddToExpectedPosition(MOTION_MODE mode, MP_EXPOS_DATA* moveData);
 static void Ros_RtMotionControl_ToControllerBAxis(MP_EXPOS_DATA* moveData, LONG physicalB[MAX_GROUPS]);
@@ -416,7 +416,11 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
 
             //send status back to the PC and notify it that I'm ready for another packet
             previousSequenceId = incomingCommand.sequenceId;
-            Ros_RtMotionControl_PopulateReplyMessage(mode, &incomingCommand, &outgoingReply);
+            if (!Ros_RtMotionControl_PopulateReplyMessage(mode, &incomingCommand, &outgoingReply))
+            {
+                endReason = EndReason_InternalError;
+                break; //drop the connection
+            }
             outgoingReply.replyType = ReplyType_Feedback;
             outgoingReply.endReason = EndReason_None;
             outgoingReply.robotStatus = robotStatus;
@@ -500,7 +504,7 @@ void Ros_RtMotionControl_RtIncMoveLoopStart(MOTION_MODE mode) //<-- IP_CLK prior
         if (bFirstRecv)
             bzero(&outgoingReply, sizeof(outgoingReply)); //nothing has been executed yet
         else
-            Ros_RtMotionControl_PopulateReplyMessage(mode, &lastExecutedCommand, &outgoingReply);
+            (void)Ros_RtMotionControl_PopulateReplyMessage(mode, &lastExecutedCommand, &outgoingReply); //sent anyway: the end reason is what matters
 
         outgoingReply.replyType = ReplyType_SessionEnded;
         outgoingReply.endReason = endReason;
@@ -1235,8 +1239,16 @@ static void Ros_RtMotionControl_ToSessionJointOrder(CtrlGroup* group, double joi
     Ros_CtrlGroup_ConvertMotoJointOrderToSequentialJointOrder(group, motoOrder, joints);
 }
 
-static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
+//Fills the reply with the positions of the robot, for the tools of command.
+//
+//Returns false if a position can't be read. It is then left at 0, and the reply shouldn't be
+//used: zeros can look like a real position. The Cartesian poses are only required in the
+//Cartesian modes. In joint mode, one which can't be computed is left at 0 (its quaternion is
+//then invalid), and the reply can still be used.
+static bool Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket* command, RtReply* reply)
 {
+    bool bOK = true;
+
     long pulsePos_moto[MAX_PULSE_AXES];
     long anglePos_moto[MAX_PULSE_AXES];
     BITSTRING figure;
@@ -1259,16 +1271,30 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
         //================================================================================
         //If it can't be read, the joints are 0, and the Cartesian pose is left at 0
         BOOL bFeedbackRead = Ros_CtrlGroup_GetFBPulsePos(group, pulsePos_moto);
+        if (!bFeedbackRead)
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] The feedback position can't be read", groupIndex);
+            bOK = false;
+        }
 
         //Angles (or meters for a linear track)
         Ros_CtrlGroup_ConvertMotoUnitsToRosUnits(group, pulsePos_moto, reply->feedbackPositionJoints[groupIndex]);
 
         if (bFeedbackRead && Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
-            //Cart. If it can't be computed, it is left at 0. mpConvPulseToAngle also converts
-            //linear axes (ex: SCARA U-axis), which the joint positions above have in meters.
-            if (mpConvPulseToAngle(groupIndex, pulsePos_moto, anglePos_moto) == OK &&
-                mpConvAxesToCartPos(groupIndex, anglePos_moto, command->toolIndex[groupIndex], &figure, &coord) == OK)
+            //Cart. mpConvPulseToAngle also converts linear axes (ex: SCARA U-axis), which the
+            //joint positions above have in meters.
+            if (mpConvPulseToAngle(groupIndex, pulsePos_moto, anglePos_moto) != OK ||
+                mpConvAxesToCartPos(groupIndex, anglePos_moto, command->toolIndex[groupIndex], &figure, &coord) != OK)
+            {
+                if (mode == MOTION_MODE_RT_CARTESIAN)
+                {
+                    Ros_Debug_BroadcastMsg("ERROR: Group [%d] The Cartesian feedback position can't be computed (tool [%d])",
+                        groupIndex, command->toolIndex[groupIndex]);
+                    bOK = false;
+                }
+            }
+            else
             {
                 Quaternion qFb;
                 QuatConversion_MpCoordOrient_To_GeomMsgsQuaternion(coord.rx, coord.ry, coord.rz, &qFb);
@@ -1296,16 +1322,21 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
         //Not Ros_CtrlGroup_GetPulsePosCmd: on robots with an automatic B axis (ex: MPL80/100),
         //it returns B in the controller's convention (B - L + U), for the trajectory modes. R/T
         //reports the physical B, like joint_states. (See Ros_RtMotionControl_ToControllerBAxis.)
-        //rad (or meter for linear track). If it can't be read, it is left at 0.
+        //rad (or meter for linear track)
         ctrlGroup.sCtrlGrp = g_Ros_Controller.ctrlGroups[groupIndex]->groupId;
         if (mpGetPulsePos(&ctrlGroup, &cmdPulse) == OK)
             Ros_CtrlGroup_ConvertMotoUnitsToRosUnits(group, cmdPulse.lPos, reply->previousCommandPositionJoints[groupIndex]);
+        else
+        {
+            Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetPulsePos failed", groupIndex);
+            bOK = false;
+        }
 
         if (Ros_CtrlGroup_IsRobot(group)) //is a robot and not an external axis
         {
-            //Cart. If it can't be read, it is left at 0. It is computed from whole pulses, so it
-            //can differ by about one pulse from the pose the absolute Cartesian mode keeps track
-            //of: a client which sends it back as its target can move the robot that far.
+            //Cart. It is computed from whole pulses, so it can differ by about one pulse from the
+            //pose the absolute Cartesian mode keeps track of: a client which sends it back as its
+            //target can move the robot that far.
             cartSendData.sRobotNo = groupIndex;
             cartSendData.sFrame = 1; //1 = RF
             cartSendData.sToolNo = command->toolIndex[groupIndex];
@@ -1326,10 +1357,17 @@ static void Ros_RtMotionControl_PopulateReplyMessage(MOTION_MODE mode, RtPacket*
                 if (group->numAxes >= 7)
                     reply->previousCommandPositionCartesian[groupIndex][TCP_Re] = DEG_0001_TO_RAD(cartRespData.lPos[6]);
             }
+            else if (mode == MOTION_MODE_RT_CARTESIAN)
+            {
+                Ros_Debug_BroadcastMsg("ERROR: Group [%d] mpGetCartPosEx failed (tool [%d])", groupIndex, command->toolIndex[groupIndex]);
+                bOK = false;
+            }
         }
 
         Ros_RtMotionControl_ToSessionJointOrder(group, reply->previousCommandPositionJoints[groupIndex]);
     }
+
+    return bOK;
 }
 
 //Cartesian mode: starts the expected pose from a pose read from the controller

@@ -47,7 +47,7 @@ typedef enum
     EndReason_SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     EndReason_InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex. See debug log.
     EndReason_MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped (ex: E-stop, HOLD), its drives are off, it left REMOTE mode, or the job stopped, after an accepted increment or while waiting for a command. -20 (energy saving mode) also when MotoROS2 didn't send the increment
-    EndReason_InternalError,        //See debug log (ex: the robot's status couldn't be read)
+    EndReason_InternalError,        //See debug log (ex: the robot's status or position couldn't be read)
     EndReason_CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 } EndReason;
 

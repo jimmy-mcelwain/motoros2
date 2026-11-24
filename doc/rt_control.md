@@ -414,7 +414,7 @@ enum EndReason
     SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
     MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped (ex: E-stop, HOLD), its drives are off, it left REMOTE mode, or the job stopped, after an accepted increment or while waiting for a command. -20 (energy saving mode) also when MotoROS2 didn't send the increment
-    InternalError,        //See debug log (ex: the robot's status couldn't be read)
+    InternalError,        //See debug log (ex: the robot's status or position couldn't be read)
     CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 }
 ```
@@ -465,6 +465,8 @@ It also ends this way when the pendant leaves REMOTE mode (ex: it is switched to
 While no commands arrive, MotoROS2 checks the status every 100 milliseconds, and once more before it executes the command which ends that wait, so the session ends the same way then (except for energy saving mode, see [Command Flow](#command-flow)).
 A command which arrives sooner is executed without another check: the status was read after the previous command.
 If the status can't be read, the session ends with `InternalError`: MotoROS2 can't tell then whether the robot stopped.
+Likewise, if a position for a reply can't be read, the session ends with `InternalError`, rather than reporting zeros which can look like a real position (in joint mode, only the joint positions are required: a Cartesian pose which can't be computed is left at zero, with an invalid quaternion).
+The final reply may then contain zeros too.
 The controller rejects the motion before its status shows why (ex: HOLD can take a few cycles to appear).
 So after `MotionRejected`, the final reply waits until the cause appears in the status, for up to 200 milliseconds.
 After an E-stop, the final reply can still show `DrivesPowered`: the controller stops the robot first, and switches the servo power off a moment later (about 0.5 seconds on a GP12).
