@@ -9,10 +9,9 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 The real-time motion control server is intended to be used in a closed loop system.
 It allows the user to command joint positions or TCP poses, or increments of either, at the rate of the robot controller's interpolation clock.
-This control mode minimizes overhead as much as possible by routing the user commands directly to the MotoPlus motion API, mpExRcsIncrementMove.
+The commands are passed directly to the MotoPlus motion API (`mpExRcsIncrementMove`), with as little overhead as possible.
 
-Note: seven axis robots, and robots with four or five axes (SCARA robots, palletizers), have only been tested with simulated servos (dummy servo).
-So have several control groups (ex: three robots, a base and a station).
+Note: seven axis robots, robots with four or five axes (SCARA robots, palletizers) and several control groups have only been tested with simulated servos (dummy servo).
 PFL (HC robots) has not been tested.
 
 ## Activation
@@ -27,122 +26,95 @@ The user must specify the `control_mode`:
 | `JOINT_ABSOLUTE (3)` | joint positions (radians) |
 | `CARTESIAN_ABSOLUTE (4)` | TCP poses (meters / quaternion) |
 
-The joint modes are recommended over the Cartesian modes, because their motion is more predictable: each joint moves as commanded, and MotoROS2 checks each joint's maximum speed.
-In the Cartesian modes, the controller computes the joint motion itself, and it can differ from what the client expects (ex: near a singularity, or the elbow angle of a seven axis robot, see [Cartesian](#cartesian)).
-
+The joint modes are recommended, because their motion is more predictable: each joint moves as commanded, and MotoROS2 checks each joint's maximum speed.
+In the Cartesian modes, the controller computes the joint motion, which can differ from what the client expects (see [Cartesian](#cartesian)).
 In the absolute modes, a lost command or a slowdown of the robot is made up for by the next command, within limits (see [Absolute positions](#absolute-positions)).
-In the incremental modes, the client has to make up for that itself.
-Choose whichever fits how the client computes its motion.
+In the incremental modes, the client has to make up for it.
 
-The Cartesian modes are only supported when every control group is a robot (no positioners or base tracks) with at least six axes.
-On robots with fewer axes (ex: SCARA robots, palletizers), the tool doesn't turn by the rotation it is sent (as measured by the orientation the controller reports), so the orientation can't be controlled.
+The Cartesian modes are only supported when every control group is a robot (no positioners or base tracks) with at least six axes: on robots with fewer axes, the orientation can't be controlled.
 
-While a session is running, `start_rt_mode` is rejected with `NOT_READY_ALREADY_ACTIVE (120)` (or `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, if it selects joint control in a Cartesian session, or the reverse), and the session continues.
-If the robot isn't ready for motion at that moment for a reason `start_rt_mode` can't fix itself (ex: the `Error` bit is set, which doesn't end the session, see [Robot status](#robot-status)), it is rejected with that reason instead (ex: `NOT_READY_ERROR`), and the session continues as well.
+While a session is running, `start_rt_mode` is rejected, and the session continues.
+It returns `NOT_READY_ALREADY_ACTIVE (120)`, or `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)` if it switches between joint and Cartesian control.
+If the robot isn't ready for motion for a reason `start_rt_mode` can't fix itself (ex: the `Error` bit is set), it returns that reason instead (ex: `NOT_READY_ERROR`).
 To start a new session (ex: after the client was restarted, or with other settings), call `stop_traj_mode` first.
-Once a session has ended (ex: after a timeout), calling `start_rt_mode` alone starts a new one.
-Switching between joint and Cartesian control always needs `stop_traj_mode` first, even after a session has ended: otherwise `start_rt_mode` returns `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`.
+Once a session has ended (ex: after a timeout), `start_rt_mode` alone starts a new one, except that switching between joint and Cartesian control always needs `stop_traj_mode` first.
 
-If this service is successful, it will return a `result_code` of `Ready (1)`.
-Otherwise, please examine the `result_code` and `message` fields in the response for more information.
-
-The service will also return a `period` in milliseconds.
-This indicates the rate at which commands will be expected by the robot.
-It is the controller's interpolation period, which depends on the robot model and the number of control groups (ex: 4 milliseconds for a single robot on a YRC1000, 2 milliseconds for a SCARA robot on a YRC1000micro, and 8 or 16 with several control groups).
+If the service is successful, it returns a `result_code` of `Ready (1)`.
+Otherwise, see the `result_code` and `message` fields of the response.
+It also returns the `period` in milliseconds at which commands are expected: the controller's interpolation period (ex: 4 milliseconds for a single robot on a YRC1000; it depends on the robot model and the number of control groups).
 
 ## Usage
 
 ### Command Flow
 
-The UDP port (`22000` by default, set by `rt_listener_udp_port_number`) is opened when MotoROS2 starts.
+The UDP port (`rt_listener_udp_port_number`, `22000` by default) is opened when MotoROS2 starts.
 Packets which arrived while no session was running are discarded when `start_rt_mode` is called.
-The user then sends the first command with the `sequenceId` field set to `0`.
-The first command is a handshake, in every control mode: its positions or increments are ignored, and only its `toolIndex` takes effect.
+
+The first command must have its `sequenceId` set to `0`.
+It is a handshake, in every control mode: its positions or increments are ignored, and only its `toolIndex` takes effect.
 Its reply reports the position the robot has been commanded to (`previousCommandPositionJoints` / `previousCommandPositionCartesian`), and the next command moves from there.
-Each subsequent command must increment the `sequenceId`, and must not be sent until the robot has replied to the previous command.
-The replies are sent at the rate of the `period` from the [start_rt_mode](ros_api.md#start_rt_mode) service.
+Each subsequent command must increment the `sequenceId`, and must not be sent before the reply to the previous command.
 
-The reply is sent right after the motion for the command has been passed to the robot's interpolation cycle.
-To keep the motion smooth, the next command must arrive in time to be processed before the following interpolation cycle.
-That is less than one `period` after the reply, because the reply is only sent once the cycle has started (on a GP12 with a 4 millisecond `period`, a command which arrived more than about 2.3 milliseconds after the reply missed the next cycle).
-So send the next command as soon as possible after the reply.
-If it arrives late, the robot does not move during that cycle.
+The reply is sent once the motion for the command has been passed to the robot's interpolation cycle, so the replies come at the rate of the `period`.
+Send the next command as soon as possible after the reply: it has to arrive within part of a `period` (about 2.3 milliseconds after the reply on a GP12 with a 4 millisecond `period`), or the robot does not move during the next cycle.
 
-A command which is sent before the reply to the previous command would be discarded (in the incremental modes, its increment would be lost).
-So the session is dropped instead (`CommandTooEarly`).
-Other packets which arrive before that reply is sent (a resend, or a packet with the wrong size or `version`) are discarded, without a reply and without ending the session.
-A packet from another IP address still ends it (`MultipleSources`).
+Other packets which arrive before the reply to the previous command (a resend, or a packet with the wrong size or `version`) are discarded without a reply, and the session continues.
+A resend of a command which was already executed (ex: because its reply was lost) is not executed again: the latest reply is sent again.
 
-A resend of a command which was already executed (ex: because its reply was lost) is not executed again.
-Instead, the latest reply is sent again, so a client whose reply was lost can resend its command to get one.
-
-If a command is not received within `timeout_for_rt_msg` (default: 5 seconds; `-1`: never), then the session times out and is dropped.
+If no command is received within `timeout_for_rt_msg` (default: 5 seconds; `-1`: never), the session ends (`Timeout`).
 To keep the session alive while the robot stands still, keep sending commands: the same position in the absolute modes, or zero increments in the incremental modes.
-These commands also keep the controller's energy saving mode from engaging.
-While no commands arrive (ex: with `timeout_for_rt_msg` set to `-1`), energy saving mode can engage during a session.
-The session then ends with `MotionRejected` (`endDetail` `-20`), within 100 milliseconds, and nothing more is executed: `robotStatus` shows `DrivesPowered` cleared.
-A command which arrives in that time is not executed either: the session ends the same way.
-`start_rt_mode` takes the robot out of energy saving mode, so it can be called right away to start a new session (on a GP12, it returned after about 1.5 seconds).
+This also keeps the controller's energy saving mode from engaging.
+If it engages anyway (ex: with `timeout_for_rt_msg` set to `-1`), the session ends within 100 milliseconds with `MotionRejected` (`endDetail` `-20`), and nothing more is executed.
+`start_rt_mode` takes the robot out of energy saving mode, so a new session can be started right away.
 
-The session is also dropped if:
+The session also ends if:
 
 - a command has the wrong size, `version` or `packetType`
-- a command is received from an IP address other than the one which sent the first valid command (that host owns the session)
-- a command is sent before the reply to the previous command
-- the first command's `sequenceId` is not `0`, or the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
-- a command is invalid (not a finite number, not a unit quaternion) or exceeds the speed limits
-- a `toolIndex` is not `0` - `63`
-- the robot rejects the motion, or stops (ex: E-stop, HOLD, alarm, PFL, servo power off, energy saving mode)
-- the pendant leaves REMOTE mode (ex: it is switched to PLAY or TEACH)
+- a packet is received from another IP address than the session's owner (see below)
+- a command is sent before the reply to the previous command (`CommandTooEarly`)
+- the first `sequenceId` is not `0`, or the `sequenceId` skips ahead by more than `max_sequence_diff_for_rt_msg` (default: `3`)
+- a command is invalid (not a finite number, not a unit quaternion, a `toolIndex` not `0` - `63`) or exceeds the speed limits
+- the robot rejects the motion or stops (ex: E-stop, HOLD, alarm, PFL, servo power off, energy saving mode), or the pendant leaves REMOTE mode (see [Robot status](#robot-status))
 - MotoROS2 can't read the robot's status or position, or receiving from the R/T port fails (`InternalError`)
 - `stop_traj_mode` is called, or the micro-ROS agent disconnects
 
-The R/T port accepts packets on every network interface of the controller, and there is no authentication.
-The session belongs to whichever host sends the first valid command after `start_rt_mode`, which doesn't have to be the host that called `start_rt_mode`.
-While a session is running, any packet from another IP address ends it (`MultipleSources`), even one which isn't an R/T command (ex: from a network scanner).
-Before the first command, such a packet ends it as an invalid command.
-So make sure that no other host sends packets to the R/T port while a session is running (ex: block the port for other hosts with a firewall in front of the controller).
+The R/T port accepts packets on every network interface of the controller, without authentication.
+The session belongs to the host which sends the first valid command, which doesn't have to be the host that called `start_rt_mode`.
+Any packet from another IP address ends the session (`MultipleSources`, or an invalid command before the first one), even one which isn't an R/T command (ex: from a network scanner).
+So make sure that no other host sends packets to the R/T port during a session (ex: with a firewall in front of the controller).
 
-MotoROS2 notices that the micro-ROS agent disconnected after a few seconds (ex: 4 to 8 seconds on a YRC1000).
-Until then, the session goes on, but replies may come late.
-A restart of the agent within a few seconds may not be noticed at all: the session then goes on, but MotoROS2's services, `stop_traj_mode` included, stay unavailable, so stop sending commands to end the session (`Timeout`).
-With `timeout_for_rt_msg` set to `-1`, the session then only ends when the robot stops or leaves REMOTE mode (ex: press HOLD, see [Robot status](#robot-status)).
+MotoROS2 notices that the micro-ROS agent disconnected after a few seconds (ex: 4 to 8 seconds on a YRC1000), and the session goes on until then.
+A restart of the agent within a few seconds may not be noticed at all: MotoROS2's services, `stop_traj_mode` included, then stay unavailable.
+Stop sending commands to end the session (`Timeout`), or, if `timeout_for_rt_msg` is `-1`, press HOLD.
 
-When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why.
-See [Session end](#session-end).
-More detail is printed to the debug log.
-A new session can be started as soon as the final reply has been received.
+When the session ends, a final reply is sent with `replyType` set to `SessionEnded`, and `endReason` / `endDetail` indicating why (see [Session end](#session-end), and the debug log for more detail).
+A new session can be started as soon as it has been received.
+It is sent over UDP, so it can be lost: if no reply arrives within `timeout_for_rt_msg` (or a time of the client's choosing, if that is `-1`), assume that the session has ended.
 
 MotoROS2 doesn't decelerate the robot: when commands stop arriving, or the session ends, no more motion is sent.
-So bring the robot to rest before ending a session (ex: before calling `stop_traj_mode`).
-The controller smooths the motion (see [Latency](#latency)), so the robot still slows down over a few tenths of a second, but that can still be too abrupt (ex: at high speed, or with a payload).
-
-The final reply is best-effort, as it is sent over UDP.
-Therefore, if the client does not receive a reply packet within `timeout_for_rt_msg` (returned by `start_rt_mode`; if it is `-1`, within a time of the client's choosing), then it should still assume that the session is dead.
+The controller's smoothing (see [Latency](#latency)) slows the robot down over a few tenths of a second, but that can be too abrupt (ex: at high speed, or with a payload).
+So bring the robot to rest before ending a session.
 
 The motion API only accepts whole units (pulses, micrometers and 0.0001 degrees).
 Increments are rounded to the nearest whole unit, and the rest is carried over to the next cycle, so small motions are not lost.
-A joint increment (or, in `JOINT_ABSOLUTE`, the distance to the next position) may exceed the joint's maximum per cycle by up to 0.001 pulse (ex: from rounding in the client's unit conversion).
-It is still sent within the maximum, and the excess is sent in a later cycle.
 
 <img src="img/RtFlow.png" alt="Command Flow" />
 
 ### Latency
 
-Measured on a GP12 (YRC1000, 4 millisecond `period`), with sines from 0.5 to 5 Hz and smoothed steps, on joint T and on the TCP:
+Measured on a GP12 (YRC1000, 4 millisecond `period`):
 
-- The reply arrived 3.6 milliseconds after the command was sent (median, network included; 3.9 milliseconds for 99 % of the commands).
+- The reply arrived 3.6 milliseconds after the command was sent (median, network included).
 - The commanded position in the reply already includes the command it answers.
-- The feedback position trailed the commanded position by about 0.19 seconds, at every frequency.
-- The controller smooths the motion: a step took about 0.2 seconds to rise from 10 % to 90 %, with less than 1 % overshoot.
-  Motion which changes direction faster than about 2 Hz is attenuated: the robot moved about 70 % of the commanded amplitude at 2 Hz, 35 to 40 % at 3 Hz, and almost nothing at 5 Hz.
+- The feedback position trailed the commanded position by about 0.2 seconds.
+- The controller smooths the motion: a step took about 0.2 seconds to rise from 10 % to 90 %, and motion which changes direction faster than about 2 Hz is attenuated (70 % of the commanded amplitude at 2 Hz, almost nothing at 5 Hz).
 
-The delay and the smoothing of the feedback are the controller's behavior, not MotoROS2's, and they may differ for other robots and controllers.
-So the robot can't follow motion faster than about 2 Hz, and a control loop which uses the feedback position has to allow for about 0.2 seconds of delay.
+This is the controller's behavior, not MotoROS2's, and it may differ for other robots and controllers.
+A control loop which uses the feedback position has to allow for about 0.2 seconds of delay.
 
-While MotoROS2 publishes (`joint_states`, `robot_status` and `tf`, every `controller_status_monitor_period`), a reply can be sent late, so the client's next command can miss its interpolation cycle, and the robot gets no increment for that cycle.
-The controller's smoothing absorbs a single missed cycle.
-On a GP12 with the default settings (`executor_sleep_period` 10, `controller_status_monitor_period` 10, `publish_tf` true), this happened about once or twice a minute; with 100 / 100 and `publish_tf: false`, about ten times less often.
+While MotoROS2 publishes (`joint_states`, `robot_status` and `tf`), a reply can be sent late, and the robot then gets no motion for one cycle, which the controller's smoothing absorbs.
+On a GP12 with the default settings, this happened about once or twice a minute.
+Publishing less often (`controller_status_monitor_period`, `executor_sleep_period`) and `publish_tf: false` make it rarer.
 
 ### Data format (command)
 
@@ -154,30 +126,24 @@ The command packet is a *packed* `RtPacket` structure.
 //##########################################################################
 struct RtPacket
 {
-    //The version of the command packet must match the value expected
-    //by MotoROS2.
+    //Must match the version expected by MotoROS2.
 
     int version;
 
-    //The packet type must match the control_mode which was specified
-    //when invoking the start_rt_mode service.
+    //Must match the control_mode selected with start_rt_mode.
 
     PacketType packetType;
 
-    //Must increment sequentially with each new command packet. The
-    //first command of a session must be 0.
+    //Must increment with each new command. The first command of a
+    //session must be 0.
 
     UINT32 sequenceId;
 
     //The positions to move to (absolute control modes), or the
     //increments (incremental control modes).
-    //
-    //For joint-space, this will be radians (or meters for linear axes)
-    //of each joint, in the order selected by the joint_order field of
-    //the start_rt_mode service. See Joints below.
-    //
-    //For cartesian, this will be meters and quaternion of the TCP.
-    //The order must be [X Y Z Qx Qy Qz Qw Re]. See Cartesian below.
+    //Joints: radians (or meters for linear axes), in the order selected
+    //by joint_order. See Joints below.
+    //Cartesian: [X Y Z Qx Qy Qz Qw Re]. See Cartesian below.
 
     double command[MAX_GROUPS][MP_GRP_AXES_NUM];
 
@@ -193,10 +159,9 @@ struct RtPacket
 }
 ```
 
-The `version` must match the version number expected by the server.
-If it does not match, the session ends (`InvalidVersion`), and `endDetail` is the version MotoROS2 expects.
-The current version is `2`.
-Every reply starts with this version (`version`), so a client can check which version the controller uses, even if the rest of the reply isn't laid out as it expects.
+The current `version` is `2`.
+If a command has another version, the session ends (`InvalidVersion`), and `endDetail` is the version MotoROS2 expects.
+Every reply starts with this version, so a client can check it even if the rest of the reply isn't laid out as it expects.
 
 The `packetType` must be the same as the `control_mode`:
 
@@ -214,125 +179,72 @@ enum PacketType
 
 In the joint modes, the `command` array contains the position (`JOINT_ABSOLUTE`) or the increment (`JOINT_INCREMENTS`) of each joint.
 The order of the joints is selected by the `joint_order` field of the [start_rt_mode](ros_api.md#start_rt_mode) service.
-This order is also used for the joint positions in the reply, in all control modes.
-It applies to each control group separately: in a session with a seven axis robot and a palletizer, each group's row uses that robot's order.
+It is also used for the joint positions in the reply, in all control modes, and it applies to each control group separately.
 
 | `joint_order` | Order | Seven axes | Four axes (ex: palletizer) |
 | ------------- | ----- | ---------- | -------------------------- |
 | `JOINT_STATES (0)` (default) | Same as the `joint_states` topic (no gaps) | `S L E U R B T` | `S L U T` |
 | `MOTOMAN (1)` | Motoman pulse order | `S L U R B T E` | `S L U - - T` |
 
-MotoROS2 reorders the joints the same way as for `joint_states`, and only for robots with seven axes (`E` moves to third place) and robots with fewer than six (the gaps are removed).
-For all other robots, both settings give the controller's pulse order.
-For most of them that is `S L U R B T`, but not for all: on a robot whose axes the controller numbers in another order (ex: an MH900), both settings give that order, as `joint_states` does.
+The orders only differ for robots with seven axes (`E` moves to third place) and robots with fewer than six (the gaps are removed).
+For all other robots, both give the controller's pulse order, as `joint_states` does (usually `S L U R B T`, but not on every robot, ex: an MH900).
 
 Linear axes (ex: base tracks) are in meters.
 
-On five axis robots whose B axis moves automatically to keep the tool level (ex: MPL80/100), joint positions and increments are those of the physical joints, as in `joint_states`: MotoROS2 converts B for the controller.
+On five axis robots whose B axis moves automatically to keep the tool level (ex: MPL80/100), the joint positions and increments are those of the physical joints, as in `joint_states`.
 So moving L or U without B tilts the tool.
 The controller limits that tilt (ex: to 15 degrees on a PL80, alarm 4420), which ends the session with `MotionRejected`.
 
 #### Cartesian
 
 In the Cartesian modes, the `command` array contains the TCP pose (`CARTESIAN_ABSOLUTE`) or the change of it (`CARTESIAN_INCREMENTS`), in the order `X Y Z` (meters), `Qx Qy Qz Qw` (quaternion), `Re` (radians).
-
 Both are expressed in the robot coordinate frame (RF), for the tool selected by `toolIndex`.
 With several robots, each robot's pose is in its own robot frame, and the robots move independently (no coordinated motion).
+
 The rotation must be a unit quaternion: a length within `0.01` of `1` is accepted, and normalized.
-In `CARTESIAN_INCREMENTS`, no rotation is `Qx Qy Qz Qw` = `0 0 0 1`.
-An all-zero quaternion is also accepted there as "no rotation", so a zero-filled command can be used as a keep-alive.
-`Re` is the elbow angle (or its change) of seven axis robots.
-It is ignored for other robots.
-Like the orientation, it wraps around at ±180 degrees (ex: in `CARTESIAN_ABSOLUTE`, a target of 179 degrees is 2 degrees from -179).
-The controller may change the elbow angle by itself during Cartesian motion, as it does when jogging.
+In `CARTESIAN_INCREMENTS`, no rotation is `0 0 0 1`, or all zeros, so a zero-filled command can be used as a keep-alive.
+`Re` is the elbow angle of seven axis robots (ignored for other robots), and wraps around at ±180 degrees like the orientation.
+The controller may change the elbow angle by itself, as it does when jogging.
 In `CARTESIAN_ABSOLUTE`, the next targets bring it back.
 In `CARTESIAN_INCREMENTS`, the reply shows it (and `motionDeviationDetected` is set), and the client can correct it.
-Near some poses, the controller also doesn't carry out a commanded change of the elbow angle completely (ex: on a seven axis robot with every joint at `0` except B, it carried out about 2 of 10 degrees).
 
-To catch client errors (ex: wrong units, or a pose sent in `CARTESIAN_INCREMENTS`), the session is dropped if the motion in one cycle exceeds:
+To catch client errors (ex: wrong units, or a pose sent in `CARTESIAN_INCREMENTS`), the session ends if the motion in one cycle exceeds 1500 mm/sec of translation, or 360 deg/sec of rotation or of elbow angle.
+These are not safety limits: the robot controller and the Functional Safety Unit (FSU) enforce those.
+MotoROS2 doesn't check joint limits, interference zones, the FSU's range limits, acceleration, or (in the Cartesian modes) the joint speeds: the client has to send motion the robot can follow.
+Otherwise the controller stops the robot with an alarm (ex: `4414`, `4416`, `4784`), and the session ends with `MotionRejected`.
 
-- 1500 mm/sec of translation
-- 360 deg/sec of rotation
-- 360 deg/sec of elbow angle (seven axis robots)
-
-These are not safety limits.
-The robot controller and the Functional Safety Unit (FSU) still enforce the actual limits.
-MotoROS2 doesn't check joint limits, interference zones or the FSU's range limits: the controller stops the robot with an alarm (ex: `4416` for a joint's pulse limit, `4784` for the FSU robot range limit), and the session ends with `MotionRejected`.
-It doesn't limit acceleration either: the client has to send motion the robot can follow.
-The Cartesian limits don't limit the joint speeds: MotoROS2 only checks those in joint mode.
-A Cartesian command within the limits can still need a joint faster than its maximum speed (ex: a fast rotation of the tool, or an elbow angle step of more than about one degree per 8 ms cycle on a seven axis robot).
-The controller then either executes it anyway (without setting `motionDeviationDetected`), or stops the robot with an alarm (ex: `4414`), and the session ends with `MotionRejected`.
-
-Near a singularity, a small Cartesian motion can require very fast joint motion.
-The controller may then not execute the motion as sent.
-For example, on a six axis robot near the wrist singularity, it can hold a wrist joint still and execute only the part of the motion which doesn't need that joint: a translation is still carried out, but the orientation of the tool changes, and a rotation which needs that joint is dropped.
-The teach pendant's Cartesian jog behaves the same way.
-Where this happens depends on the robot and the controller.
-`mpExRcsIncrementMove` still succeeds, the session continues, and no alarm is raised: only the commanded position in the reply, and the `motionDeviationDetected` flag, show it.
-In the absolute modes, MotoROS2 then tries to make up the difference with the next commands, and the difference can grow.
-It ends the session when it exceeds one cycle's motion (`InvalidIncrement`), or when the controller rejects it with an alarm (ex: `4414` "excessive segment", `MotionRejected`).
+Near a singularity, the controller may not execute a Cartesian motion as sent, as with the pendant's Cartesian jog (ex: near the wrist singularity, it can hold a wrist joint still and drop the part of the motion which needs it).
+No alarm is raised, and the session continues: only the commanded position in the reply and `motionDeviationDetected` show it.
+In the absolute modes, the difference can then grow until the session ends (`InvalidIncrement`, or `MotionRejected` with an alarm).
 Stop, or move away from the singularity, when the flag is set, or use joint mode near singularities.
 
 #### Absolute positions
 
-In the `JOINT_ABSOLUTE` and `CARTESIAN_ABSOLUTE` modes, the `command` array contains the position to move to (see [Joints](#joints) and [Cartesian](#cartesian)).
-In `CARTESIAN_ABSOLUTE`, a command which changes the tool of a control group is not executed for that group, like the first command of a session: the client can't know where the new tool's TCP is yet.
-Its pose for that group is ignored (not checked), and its reply reports the pose of the new tool's TCP (`previousCommandPositionCartesian`).
-The next command must be within one cycle's motion of that pose.
-The other groups move as commanded.
-So change the tool while that group is standing still: the switching command doesn't move it.
-In the other modes, a tool change takes effect with the command that makes it: in `CARTESIAN_INCREMENTS`, its increment moves the new tool's TCP, and in the joint modes, only the Cartesian poses in the reply change.
-
 The motion API only accepts increments.
-So each cycle, MotoROS2 sends the difference between the position in the command and the position which the robot has been commanded to.
-A fraction of a unit which can't be sent is made up for by the next command.
-So is a lost command, or a slowdown of the robot (ex: by the FSU), in one cycle, as long as the next position is within one cycle's motion (see below).
+So each cycle, MotoROS2 sends the difference between the position in the command and the position the robot has been commanded to.
+A fraction of a unit which can't be sent, a lost command, or a slowdown of the robot (ex: by the FSU) is made up for by the next command, as long as that stays within one cycle's motion.
+The same limits apply as for the increments (the maximum speed of each joint, 1500 mm/sec, and 360 deg/sec of rotation and of elbow angle): a position which is further away ends the session with `InvalidIncrement`.
+
+So every command must contain the position of every axis of every control group, not only of those which move (ex: start from the positions in the reply to the handshake): `0` is a position, not "don't move".
+As in every mode, the first command is only a handshake, and is **not** executed (see [Command Flow](#command-flow)).
+
+When the robot is slowed down (ex: by the FSU speed limit), it falls behind, and the next position may be more than one cycle's motion away.
+So a client which plays back a trajectory planned in advance should slow its playback down when `motionDeviationDetected` is set, or when the commanded position in the reply falls behind.
+A client which computes each position from the commanded position in the reply is never more than one cycle behind.
+
+In `CARTESIAN_ABSOLUTE`, a command which changes the tool of a control group doesn't move that group (its pose for that group is ignored), like the handshake: its reply reports the pose of the new tool's TCP, and the next command must be within one cycle's motion of it.
+So change the tool while that group is standing still.
+In the other modes, a tool change takes effect with the command that makes it (in the joint modes, only the Cartesian poses in the reply change).
 
 In joint mode, the commanded position is read from the controller every cycle.
-In Cartesian mode, MotoROS2 keeps track of the commanded pose itself, and only reads it from the controller again when the two differ by more than `rt_motion_deviation_threshold_micrometers` or `rt_motion_deviation_threshold_deg_0001`, or the tool changes.
-(The pose the controller reports is computed from whole encoder pulses, but the commanded pose is usually between two pulses.
-If MotoROS2 started from the reported pose every cycle, it would send that small difference again every cycle, until a joint stepped one pulse too far, and then back: the robot would step back and forth by a pulse while standing still.)
-So after the robot was slowed down by less than these thresholds in total, it can stop up to that far short of the target.
-Lower them if that is too much, but not below the TCP motion of about one encoder pulse.
-In joint mode, a client which sends the commanded position from a reply back as its target does not move the robot.
-In Cartesian mode, the pose in the reply is the one computed from whole encoder pulses, so after the robot has moved, it can differ from the pose MotoROS2 keeps track of by up to about one pulse (at the start of a session, they are the same).
-Sending it back as the target can therefore move the robot by up to about one pulse.
-To keep the robot still, send the same target again, rather than the pose from the reply.
-
-As in every mode, the first command of a session is a handshake, and is **not** executed (see [Command Flow](#command-flow)).
-The client doesn't know the position the robot has been commanded to before that, so a position sent then could be too far away.
-Each command after that must be within one cycle's motion of the position the robot has been commanded to: the same limits apply as for the increments (the maximum speed of each joint, 1500 mm/sec, and 360 deg/sec of rotation and of elbow angle).
-A position which is further away ends the session with `InvalidIncrement`.
-So every command must contain the position of every axis of every control group (except a group whose tool it changes in `CARTESIAN_ABSOLUTE`, see above), not only of those which move (ex: start from the positions in the reply to the handshake): `0` is a position, not "don't move".
-
-When the robot is slowed down (ex: by the FSU speed limit), it falls behind the commanded positions, and the next position may be further away than one cycle's motion.
-That ends the session with `InvalidIncrement`.
-So a client which plays back a trajectory planned in advance should slow its playback down when `motionDeviationDetected` is set, or when the commanded position in the reply falls behind, so that each position stays within one cycle's motion of the robot.
-That keeps the robot on its path, and several control groups in step with each other (with an FSU speed limit on one of two robots, the controller slowed both of them down).
-A client which computes each position from the commanded position in the reply is never more than one cycle behind.
+In Cartesian mode, MotoROS2 keeps track of the commanded pose itself, because the pose the controller reports is computed from whole encoder pulses.
+It only reads it again when the two differ by more than `rt_motion_deviation_threshold_micrometers` or `rt_motion_deviation_threshold_deg_0001`, or the tool changes.
+So after the robot was slowed down by less than these thresholds, it can stop up to that far short of the target (lower them if needed, but not below the TCP motion of about one encoder pulse).
+For the same reason, the pose in the reply can differ from the pose MotoROS2 keeps track of by up to about one pulse: to keep the robot still, send the same target again, rather than the pose from the reply.
 
 ### Data format (reply)
 
 The reply packet is a *packed* `RtReply` structure.
-This will report the version, echo the sequence ID, indicate whether the session is still active, report the state of the robot, provide feedback position, and provide commanded position.
-
-Additionally, the `motionDeviationDetected` flag indicates that the controller did not execute the increments up to the **previous** command cycle as sent.
-Ex: the Functional Safety Unit (FSU) speed limit truncated them, or the controller changed them near a singularity (see above).
-The motion continues, but not as commanded.
-
-MotoROS2 keeps the position the robot should be commanded to: a position read from the controller, plus every increment sent since.
-Each cycle, it compares that with the commanded position.
-So a deviation which is too small to see in a single cycle still adds up, until it passes the thresholds.
-Then the flag is set for that reply, and the comparison starts again from the commanded position.
-A steady deviation therefore sets the flag again every few cycles (every cycle, if it is larger than the thresholds per cycle).
-Compare the commanded position in the reply with the expected one to see what happened.
-The flag is set if any control group deviates: compare each group's row to see which one did.
-While the robot is slowed down, an axis can also move by a few pulses even with an increment of `0` (seen in `JOINT_INCREMENTS` on the automatic B axis of a PL80).
-When the FSU (or anything else) stops the robot, the session ends with `MotionRejected` instead (the flag may still be set in the last few cycles before that).
-How far the motion may differ before the flag is set is configured with `rt_motion_deviation_threshold_pulses` (joint mode), and `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` (Cartesian mode) in the configuration file.
-In joint mode, the increments are sent in whole pulses, so the commanded position only differs from the expected one when the controller didn't execute them as sent.
-The joint mode threshold is therefore `0` by default: any difference sets the flag.
-(On robots whose B axis moves automatically, B may differ by one more pulse without setting the flag, because the controller rounds its conversion of B differently.)
 
 ```c
 //##########################################################################
@@ -341,18 +253,14 @@ The joint mode threshold is therefore `0` by default: any difference sets the fl
 struct RtReply
 {
     //The version of the R/T interface which MotoROS2 implements.
-    //It is first, so a client can read it even if the rest of the
-    //reply isn't laid out as it expects.
 
     int version;
 
     UINT32 sequenceEcho;
 
-    //See ReplyType enum.
-    //When a session ends for any reason, a final reply of type SessionEnded
-    //is sent. Its sequenceEcho is that of the last command which was
-    //executed. Its position data is read when the session ends (with the
-    //tools of that command).
+    //See ReplyType enum. The final reply of a session (SessionEnded) echoes
+    //the last command which was executed, and its position data is read
+    //when the session ends (with the tools of that command).
 
     UINT32 replyType;
 
@@ -364,16 +272,13 @@ struct RtReply
 
     int endDetail;
 
-    //Bitfield of RobotStatusBits. This is read right after the previous reply
-    //was sent, so it is one cycle old. (It is current in a SessionEnded reply.)
-    //Any change which prevents motion will also end the session.
+    //Bitfield of RobotStatusBits. Read right after the previous reply was
+    //sent, so it is one cycle old (current in a SessionEnded reply).
 
     UINT32 robotStatus;
 
-    //This is indicative of where the robot is physically located.
-    //Please note that this will trail behind the commanded position.
-    //The joint ordering will match that of the command packet.
-    //See Joints and Cartesian above.
+    //Where the robot physically is. This trails behind the commanded
+    //position. Joints in the order of the command packet.
 
     double feedbackPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double feedbackPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
@@ -381,24 +286,25 @@ struct RtReply
     //The position the robot has been commanded to: the sum of all the
     //increments, or (in the absolute control modes) the positions, as far
     //as the robot has followed them.
-    //
-    //This can be used to check whether the robot executed the
-    //commands as sent (see motionDeviationDetected), and to monitor
-    //the latency between command and feedback.
 
     double previousCommandPositionJoints[MAX_GROUPS][MP_GRP_AXES_NUM];
     double previousCommandPositionCartesian[MAX_GROUPS][MP_GRP_AXES_NUM];
 
-    //Set when the controller did not execute the increments up to the
-    //*previous* command cycle as sent (ex: the FSU speed limit truncated
-    //them, or the controller changed them near a singularity). Small
-    //deviations add up until they pass the configured thresholds. It
-    //does NOT indicate anything about this most recent command packet.
+    //The controller did not execute the increments up to the *previous*
+    //command as sent. Says nothing about this most recent command.
     //Always false in a SessionEnded reply.
 
     bool motionDeviationDetected;
 }
 ```
+
+`motionDeviationDetected` is set when the controller did not execute the increments as sent (ex: the FSU speed limit truncated them, or near a singularity, see [Cartesian](#cartesian)).
+The motion continues, but not as commanded.
+MotoROS2 compares the commanded position with the position it expects (a position read from the controller, plus every increment sent since), so small deviations add up until they pass the thresholds in the configuration file: `rt_motion_deviation_threshold_pulses` (joint mode), and `rt_motion_deviation_threshold_micrometers` and `rt_motion_deviation_threshold_deg_0001` (Cartesian mode).
+Then the flag is set, and the comparison starts again from the commanded position, so a steady deviation sets the flag every few cycles.
+In joint mode, the increments are sent in whole pulses, so the threshold is `0` by default: any difference sets the flag.
+The flag is set if any control group deviates: compare each group's commanded position with the expected one to see which one did.
+When the FSU (or anything else) stops the robot, the session ends with `MotionRejected` instead.
 
 ### Session end
 
@@ -420,15 +326,14 @@ enum EndReason
     MultipleSources,      //A command was received from a second IP address. endDetail: that address (network byte order)
     SequenceGap,          //The sequenceId skipped ahead, or the first one isn't 0. endDetail: the sequenceId received
     InvalidIncrement,     //Not a finite number, not a unit quaternion, exceeds a speed limit, or invalid toolIndex
-    MotionRejected,       //endDetail: the return code of mpExRcsIncrementMove, or 0 if the robot stopped (ex: E-stop, HOLD), its drives are off, it left REMOTE mode, or the job stopped, after an accepted increment or while waiting for a command. -20 (energy saving mode) also when MotoROS2 didn't send the increment
+    MotionRejected,       //The robot rejected the motion or stopped. endDetail: see below
     InternalError,        //See debug log (ex: the robot's status or position couldn't be read)
     CommandTooEarly,      //A command was sent before the reply to the previous one. endDetail: its sequenceId
 }
 ```
 
 `endDetail` is `0` for the reasons which don't list a value.
-
-For `MotionRejected`, `endDetail` is the return code of `mpExRcsIncrementMove`, or `0`:
+For `MotionRejected`, it is the return code of `mpExRcsIncrementMove`, or `0`:
 
 | `endDetail` | Meaning |
 | ----------- | ------- |
@@ -438,13 +343,11 @@ For `MotionRejected`, `endDetail` is the return code of `mpExRcsIncrementMove`, 
 | `-8` | The control group is being jogged |
 | `-9` | The control group is executing a move instruction |
 | `-13` | Another job is using the control group |
-| `-19` | PFL is active (`E_EXRCS_PFL_FUNC_BUSY`, HC robots; not tested) |
-| `-20` | Energy saving mode is active (`E_EXRCS_UNDER_ENERGY_SAVING`): the drives are off (`DrivesPowered` cleared). MotoROS2 also ends the session with this value when energy saving mode engages (see [Command Flow](#command-flow)) |
+| `-19` | PFL is active (HC robots) |
+| `-20` | Energy saving mode is active: the drives are off. Also when energy saving mode engages while no commands arrive (see [Command Flow](#command-flow)) |
 
-The other return codes (`-3` - `-7`, `-10` - `-12`) are errors in data which MotoROS2 sets, and should not occur.
-`-19` and `-20` aren't defined in the MotoPlus SDK headers (MotoROS2 defines them).
-`-20` was seen on a YRC1000, `-19` hasn't been seen yet.
-The same cause can give either value: HOLD gave `0` or `-1`, depending on whether the controller accepted the increment before it held the job (on a GP12, it gave `-1` in 16 of 16 tries).
+The other return codes (`-3` - `-7`, `-10` - `-12`) should not occur.
+The same cause can give either `0` or `-1` (ex: HOLD), depending on whether the controller accepted the increment before it stopped.
 
 ### Robot status
 
@@ -463,28 +366,27 @@ enum RobotStatusBits
 }
 ```
 
-While a session is active, the robot is necessarily powered, in REMOTE mode, free of E-stops and alarms, and its job is running (the session ends otherwise, see below).
+While a session is active, the robot is powered, in REMOTE mode, free of E-stops, HOLD, alarms and PFL stops, and its job is running.
+Otherwise the session ends with `MotionRejected` (`endDetail` `0`, or `-20` in energy saving mode, unless the controller rejected the motion first).
+This is needed because the controller doesn't always reject the motion when the robot stops (ex: while the job is held, increments can be accepted but not executed).
+MotoROS2 reads the status after each command, every 100 milliseconds while no commands arrive, and again before it executes the command which ends such a wait.
 An error (ex: a wrong password entered on the pendant) sets `Error`, but doesn't stop the robot, so the session goes on.
-These bits are most useful in the `SessionEnded` reply, to determine why the robot rejected motion (`MotionRejected`).
-The controller doesn't always reject the motion when the robot stops: on HOLD, `mpExRcsIncrementMove` can keep returning OK while the job is held, so every increment is accepted but not executed, even after HOLD is released (the job stays held).
-So the session also ends with `MotionRejected` (`endDetail` `0`) when the status shows an E-stop, HOLD, an alarm or PFL, the drives are off (`DrivesPowered` cleared), or the job is no longer running.
-It also ends this way when the pendant leaves REMOTE mode (ex: it is switched to PLAY or TEACH): in PLAY mode, the controller keeps executing the increments, but MotoROS2 only allows motion in REMOTE mode.
-While no commands arrive, MotoROS2 checks the status every 100 milliseconds, and once more before it executes the command which ends that wait, so the session ends the same way then (except for energy saving mode, see [Command Flow](#command-flow)).
-A command which arrives sooner is executed without another check: the status was read after the previous command.
-If the status can't be read, the session ends with `InternalError`: MotoROS2 can't tell then whether the robot stopped.
-Likewise, if a position for a reply can't be read, the session ends with `InternalError`, rather than reporting zeros which can look like a real position (in joint mode, only the joint positions are required: a Cartesian pose which can't be computed is left at zero, with an invalid quaternion).
-The final reply may then contain zeros too.
-The controller rejects the motion before its status shows why (ex: HOLD can take a few cycles to appear).
-So after `MotionRejected`, the final reply waits until the cause appears in the status, for up to 200 milliseconds.
-After an E-stop, the final reply can still show `DrivesPowered`: the controller stops the robot first, and switches the servo power off a moment later (about 0.5 seconds on a GP12).
-Likewise, the final reply can still show `JobRunning` together with the cause (ex: after an E-stop, always; after HOLD, sometimes): the job stops a few cycles after the cause appears (about 15 to 30 milliseconds on a GP12).
-So use the cause bits, not `JobRunning`, to tell why the robot stopped.
-A short HOLD can be released before MotoROS2 reads the status, so the final reply doesn't show `Hold`.
-The job stays stopped after HOLD is released, though, so the reply then shows `JobRunning` cleared.
+
+If the status, or a position for a reply, can't be read, the session ends with `InternalError` (the final reply may then contain zeros).
+In joint mode, a Cartesian pose which can't be computed is left at zero (with an invalid quaternion), and the session goes on.
+
+The status can show the cause of a stop a few cycles after the motion was rejected, so the final reply waits for the cause to appear, for up to 200 milliseconds.
+Some bits can still lag behind in the final reply:
+
+- After an E-stop, it can still show `DrivesPowered`: the servo power goes off a moment later (about 0.5 seconds on a GP12).
+- It can still show `JobRunning` together with the cause (ex: after an E-stop, always; after HOLD, sometimes): the job stops about 15 to 30 milliseconds after the cause appears (on a GP12).
+  So use the cause bits, not `JobRunning`, to tell why the robot stopped.
+- A short HOLD can be released before the status is read, so the reply doesn't show `Hold`.
+  The job stays stopped, though, so the reply then shows `JobRunning` cleared.
+
 For complete controller status (ex: alarm codes), use the [robot_status](ros_api.md#robot_status) topic.
 
-If the session ends before the first command was accepted, the final reply is only sent if a packet was rejected, and it is sent to the host which sent that packet.
-In that case, the position data is all zeros.
+If the session ends before the first command was accepted, the final reply is only sent if a packet was rejected, to the host which sent that packet, and its position data is all zeros.
 
 ### Wire format
 
@@ -505,19 +407,14 @@ The field sizes are:
 `MAX_GROUPS` and `MP_GRP_AXES_NUM` are both `8`.
 Unused groups and axes are ignored (set them to `0`).
 Each control group has its own row of `command` and of each array in the reply, and its own `toolIndex`.
-The groups are in the controller's order: robots first (`R1`, `R2`, ...), then base axes (`B1`, ...), then stations (`S1`, ...).
-This is the same order as the groups in `joint_states` (`group_1`, `group_2`, ...).
+The groups are in the controller's order, as in `joint_states` (`group_1`, `group_2`, ...): robots first (`R1`, `R2`, ...), then base axes (`B1`, ...), then stations (`S1`, ...).
 
-The reply is larger than the 1472 bytes of UDP data which fit in one standard Ethernet frame (MTU 1500), so it is always sent as two IP fragments.
-The command packet fits in one frame.
-Firewalls, NAT routers and other devices between the client and the controller must pass fragmented UDP: if they drop it, `start_rt_mode` succeeds, but the client never receives a reply (see [Firewall issues](network_configuration.md#firewall-issues)).
-If either fragment is lost, the whole reply is lost.
+The reply doesn't fit in one standard Ethernet frame (MTU 1500), so it is always sent as two IP fragments, and it is lost if either fragment is.
+Firewalls, NAT routers and other devices between the client and the controller must pass fragmented UDP: otherwise `start_rt_mode` succeeds, but the client never receives a reply (see [Firewall issues](network_configuration.md#firewall-issues)).
 
 ## Deactivation
 
-Other motion modes may not be used at the same time as an R/T session.
-Starting one fails, and the session goes on: `start_traj_mode` and `start_point_queue_mode` return `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, and a `FollowJointTrajectory` goal is aborted with `INIT_TRAJ_WRONG_MODE` (`error_code` `-100209`).
-The R/T mode also stays active after a session has ended (ex: after a timeout), so they fail the same way until `stop_traj_mode` is called.
-Calling `stop_traj_mode` ends the session (the final reply has `endReason` `StopRequested`).
-At that time, another motion mode may be used.
+Other motion modes may not be used while the R/T mode is active, even after a session has ended (ex: after a timeout).
+`start_traj_mode` and `start_point_queue_mode` return `NOT_READY_OTHER_TRAJ_MODE_ACTIVE (114)`, and a `FollowJointTrajectory` goal is aborted with `INIT_TRAJ_WRONG_MODE` (`error_code` `-100209`).
+Calling `stop_traj_mode` ends the session (`StopRequested`) and the R/T mode, so another motion mode may be used.
 The UDP port stays open, so a new session can be started with `start_rt_mode`.
