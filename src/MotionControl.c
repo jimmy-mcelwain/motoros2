@@ -1453,7 +1453,8 @@ static BOOL Ros_MotionControl_StartInterpolationTask(MOTION_MODE mode, RtSession
             g_Ros_Controller.tidIncMoveThread = INVALID_TASK;
             Ros_RtMotionControl_AbortSession();
             bNonRtTaskRunning = FALSE;
-            Ros_Controller_SetIOState(IO_FEEDBACK_FAILURE, TRUE);
+            //Not IO_FEEDBACK_FAILURE: that means MotoROS2 has stopped working, and stays on until
+            //it restarts. This only fails the start_* call, which can be tried again.
             mpSetAlarm(ALARM_TASK_CREATE_FAIL, APPLICATION_NAME " FAILED TO CREATE TASK", SUBCODE_INCREMENTAL_MOTION);
 
             return FALSE;
